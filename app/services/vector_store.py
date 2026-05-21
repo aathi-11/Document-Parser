@@ -7,6 +7,9 @@ from typing import Any, Dict, List
 import numpy as np
 
 
+_STORE_CACHE: dict[str, VectorStore] = {}
+
+
 class VectorStore:
     def __init__(self, embeddings: np.ndarray | List[list[float]], chunks: List[str], metadatas: List[Dict[str, Any]]) -> None:
         if isinstance(embeddings, list):
@@ -54,6 +57,12 @@ class VectorStore:
         np.save(str(dir_path / "embeddings.npy"), self.embeddings)
         with (dir_path / "data.json").open("w", encoding="utf-8") as handle:
             json.dump({"chunks": self.chunks, "metadatas": self.metadatas}, handle)
+        
+        # Populate cache after saving
+        path_key = str(dir_path.resolve())
+        _STORE_CACHE[path_key] = self
+        _STORE_CACHE[dir_path.name] = self
+        print(f"[CACHE] Saved and cached VectorStore for session: {dir_path.name}")
 
     @classmethod
     def load(cls, dir_path: Path) -> VectorStore:
@@ -61,6 +70,37 @@ class VectorStore:
         with (dir_path / "data.json").open("r", encoding="utf-8") as handle:
             data = json.load(handle)
         return cls(embeddings, data["chunks"], data["metadatas"])
+
+    @classmethod
+    def get_session_store(cls, dir_path: Path, session_id: str | None = None) -> VectorStore:
+        # Check by session_id first if provided
+        if session_id and session_id in _STORE_CACHE:
+            print(f"[CACHE HIT] Loaded VectorStore from memory for session ID: {session_id}")
+            return _STORE_CACHE[session_id]
+
+        # Check by path
+        path_key = str(dir_path.resolve())
+        if path_key in _STORE_CACHE:
+            print(f"[CACHE HIT] Loaded VectorStore from memory for path: {path_key}")
+            return _STORE_CACHE[path_key]
+
+        # Check by directory name as fallback
+        dir_name = dir_path.name
+        if dir_name in _STORE_CACHE:
+            print(f"[CACHE HIT] Loaded VectorStore from memory for session dir name: {dir_name}")
+            return _STORE_CACHE[dir_name]
+
+        # Cache miss: load from disk
+        print(f"[CACHE MISS] Loading VectorStore from disk for session: {session_id or dir_name}")
+        store = cls.load(dir_path)
+
+        # Cache the store
+        _STORE_CACHE[path_key] = store
+        _STORE_CACHE[dir_name] = store
+        if session_id:
+            _STORE_CACHE[session_id] = store
+            
+        return store
 
     def search(
         self, query_embedding: List[float], query_text: str, top_k: int, fetch_k: int = 15

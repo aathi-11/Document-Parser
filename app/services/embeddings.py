@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from math import ceil
+from threading import Lock
 from typing import Callable, List
 
 from app.config import settings
@@ -20,19 +22,47 @@ def embed_texts(
     if not texts:
         return []
 
-    # Smaller batches reduce long pauses during embeddings.
-    all_embeddings: List[list[float]] = []
-
     batch_size = max(1, batch_size)
-    total_batches = ceil(len(texts) / batch_size)
-    current_batch = 0
+    batches = [texts[i:i + batch_size] for i in range(0, len(texts), batch_size)]
+    total_batches = len(batches)
 
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        batch_embeddings = ollama_embed(settings.ollama_base_url, settings.ollama_embed_model, batch)
+    results: List[tuple[int, List[list[float]]]] = []
+    completed_batches = 0
+    lock = Lock()
+
+    max_workers = min(8, total_batches)
+    print(f"[EMBED] Parallelizing embedding generation across {total_batches} batches with {max_workers} workers...")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_idx = {
+            executor.submit(
+                ollama_embed,
+                settings.ollama_base_url,
+                settings.ollama_embed_model,
+                batch
+            ): idx
+            for idx, batch in enumerate(batches)
+        }
+
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                batch_embeddings = future.result()
+            except Exception as exc:
+                print(f"[EMBED ERROR] Batch {idx} failed: {exc}")
+                raise exc
+
+            with lock:
+                results.append((idx, batch_embeddings))
+                completed_batches += 1
+                if progress_callback:
+                    progress_callback(completed_batches, total_batches)
+
+    # Restore the original order
+    results.sort(key=lambda x: x[0])
+
+    all_embeddings: List[list[float]] = []
+    for _, batch_embeddings in results:
         all_embeddings.extend(batch_embeddings)
-        current_batch += 1
-        if progress_callback:
-            progress_callback(current_batch, total_batches)
 
     return all_embeddings

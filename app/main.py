@@ -337,7 +337,7 @@ async def upload_documents(
     data_path = session_dir / "data.json"
     embeddings_path = session_dir / "embeddings.npy"
     if data_path.exists() and embeddings_path.exists():
-        store = await run_in_threadpool(VectorStore.load, session_dir)
+        store = await run_in_threadpool(VectorStore.get_session_store, session_dir, session_id)
     else:
         store = VectorStore([], [], [])
 
@@ -423,7 +423,7 @@ async def ask_question(payload: AskRequest) -> dict:
     # Standard RAG path
     # ------------------------------------------------------------------
     try:
-        store = await run_in_threadpool(VectorStore.load, session_dir)
+        store = await run_in_threadpool(VectorStore.get_session_store, session_dir, session_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load session index: {exc}")
 

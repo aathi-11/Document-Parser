@@ -89,6 +89,28 @@ def is_aggregation_question(question: str, session_dir: Path = None) -> bool:
                 
     return False
 
+
+def sanitize_df_name(filename: str) -> str:
+    import re
+    name = Path(filename).stem
+    # Replace non-alphanumeric with underscores
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', name)
+    # Ensure it doesn't start with a number
+    if sanitized and sanitized[0].isdigit():
+        sanitized = "_" + sanitized
+    return f"df_{sanitized}"
+
+
+def _run_with_timeout(func, timeout_sec, *args, **kwargs):
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout_sec)
+        except concurrent.futures.TimeoutError:
+            raise RuntimeError(f"Execution timed out after {timeout_sec} seconds.")
+
+
 def run_tabular_query(
     session_dir: Path,
     question: str,
@@ -110,26 +132,38 @@ def run_tabular_query(
     if not csv_files:
         return {"handled": False}
         
-    # 2. Gather Schema Information of Cleaned CSV files
+    # 2. Gather Schema Information & Pre-load Cleaned CSV files as DataFrames
     import pandas as pd
+    import numpy as np
+    import re
+    
+    preloaded_dfs = {}
     schema_parts = []
-    file_info_prompt = []
     
     for csv_file in sorted(csv_files):
         try:
-            df = pd.read_csv(csv_file, nrows=2)
-            cols = df.columns.tolist()
-            schema_parts.append(f"- '{csv_file.name}': Columns: {cols}")
-            file_info_prompt.append(f"- {csv_file.name}: Path is '{csv_file.as_posix()}'")
-        except Exception as e:
-            logger.error(f"Error reading header of {csv_file.name}: {e}")
+            df = pd.read_csv(csv_file)
+            var_name = sanitize_df_name(csv_file.name)
+            preloaded_dfs[var_name] = df
             
-    schema_str = "\n".join(schema_parts)
-    files_str = "\n".join(file_info_prompt)
+            cols = df.columns.tolist()
+            # Generate sample rows representation
+            sample_rows = df.head(2).to_string(index=False)
+            
+            schema_parts.append(
+                f"- DataFrame variable: `{var_name}` (sourced from '{csv_file.name}')\n"
+                f"  Columns: {cols}\n"
+                f"  Sample Data:\n"
+                f"  {sample_rows}"
+            )
+        except Exception as e:
+            logger.error(f"Error preloading/parsing {csv_file.name}: {e}")
+            
+    schema_str = "\n\n".join(schema_parts)
     
     # 3. Build Dynamic Guidelines list to avoid distracting the LLM
     guidelines = [
-        "1. Load ONLY the required CSV files using the paths listed above.",
+        "1. Use the preloaded DataFrames directly (e.g., `df_Claims_Bordereau`, `df_Treaty_Performance`). Do NOT load the CSV files using `pd.read_csv` or attempt to read any files from disk.",
         "2. Do NOT use `.str` or `.str.replace` on columns that are already numeric (like 'GWP (USD)', 'Earned Premium (USD)', development months, etc.).",
         "3. Convert any pandas Series to scalar numbers using `.iloc[0]` or `.item()` before printing or formatting.",
         "4. Print all calculated tables, metrics, and details clearly to stdout so they can be analyzed."
@@ -141,9 +175,9 @@ def run_tabular_query(
     if any(k in q_lower for k in ["loss", "claim", "cyber", "ratio", "commission", "defensible", "perform"]):
         guidelines.append(
             "5. Column Mapping & Table Joins:\n"
-            "   - In 'Claims_Bordereau.csv', the loss amount is in 'Gross Incurred (USD)'. (Do not use 'Incurred Losses (USD)' there).\n"
-            "   - In 'Treaty_Performance.csv', the loss amount is in 'Incurred Losses (USD)'.\n"
-            "   - To aggregate claims or losses by Line of Business or Cedent Name, merge 'Claims_Bordereau.csv' with 'Treaty_Portfolio.csv' on 'Treaty ID'. Note: Since both files contain duplicate columns like 'Line of Business' and 'Status', merging them will result in suffixes (e.g. 'Line of Business_x' and 'Line of Business_y'). Use the correct suffixed column name (like 'Line of Business_x') or drop/rename duplicate columns before merging to avoid KeyError."
+            "   - In `df_Claims_Bordereau`, the loss amount is in 'Gross Incurred (USD)' (do not use 'Incurred Losses (USD)' there).\n"
+            "   - In `df_Treaty_Performance`, the loss amount is in 'Incurred Losses (USD)'.\n"
+            "   - To aggregate claims or losses by Line of Business or Cedent Name, merge `df_Claims_Bordereau` with `df_Treaty_Portfolio` on 'Treaty ID'. Note: Since both DataFrames contain duplicate columns like 'Line of Business' and 'Status', merging them will result in suffixes (e.g. 'Line of Business_x' and 'Line of Business_y'). Use the correct suffixed column name (like 'Line of Business_x') or drop/rename duplicate columns before merging to avoid KeyError."
         )
         guidelines.append(
             "6. Date Columns:\n"
@@ -151,19 +185,19 @@ def run_tabular_query(
         )
         guidelines.append(
             "7. Loss Ratio, Combined Ratio & Ceding Commission:\n"
-            "   - To calculate the premium-weighted Combined Ratio per Line of Business or Cedent from 'Treaty_Performance.csv':\n"
+            "   - To calculate the premium-weighted Combined Ratio per Line of Business or Cedent from `df_Treaty_Performance`:\n"
             "     Weighted Loss Ratio = Sum('Incurred Losses (USD)') / Sum('Earned Premium (USD)')\n"
             "     Weighted Expense Ratio = Sum('Earned Premium (USD)' * 'Expense Ratio') / Sum('Earned Premium (USD)')\n"
             "     Weighted Combined Ratio = Weighted Loss Ratio + Weighted Expense Ratio\n"
             "     (Do NOT use simple average of the Combined Ratio column, always weight by 'Earned Premium (USD)').\n"
-            "   - Loss Ratio (from claims/portfolio) = (Sum of 'Gross Incurred (USD)' from Claims_Bordereau for that LOB/year) / (Sum of 'GWP (USD)' from Treaty_Portfolio for that LOB/year).\n"
+            "   - Loss Ratio (from claims/portfolio) = (Sum of 'Gross Incurred (USD)' from `df_Claims_Bordereau` for that LOB/year) / (Sum of 'GWP (USD)' from `df_Treaty_Portfolio` for that LOB/year).\n"
             "   - Defensibility: If Loss Ratio or Combined Ratio is very high (e.g. > 80% loss ratio or > 100% combined ratio), the treaty is unprofitable, making a 30% ceding commission not defensible."
         )
         
     # Inject actuarial triangle guidelines if relevant
     if any(k in q_lower for k in ["triangle", "ibnr", "development", "chain-ladder"]):
         guidelines.append(
-            "8. Actuarial Loss Triangles (Loss_Triangle_Property.csv):\n"
+            "8. Actuarial Loss Triangles (df_Loss_Triangle_Property):\n"
             "   - To compute a volume-weighted development factor from column A (e.g. '12 months') to column B (e.g. '24 months'):\n"
             "     `factor = df.loc[df['Accident Year'] <= max_valid_year, B].sum() / df.loc[df['Accident Year'] <= max_valid_year, A].sum()`\n"
             "     where max_valid_year is the latest Accident Year that has non-null/non-empty values for column B.\n"
@@ -172,28 +206,30 @@ def run_tabular_query(
         )
         
     # Inject fuzzy matching / peril guidelines if relevant
-    if any(k in q_lower for k in ["bushfire", "wildfire", "peril", "exposure", "tiv", "aal", "pml"]):
+    if any(k in q_lower for k in ["bushfire", "wildfire", "peril", "exposure", "tiv", "aal", "pml", "beryl", "hurricane", "storm", "flood"]):
         guidelines.append(
-            "9. Peril / Fuzzy Terminology Matching:\n"
-            "   - If looking up or filtering by peril (like 'bushfire' or 'wildfire'), perform case-insensitive substring matching rather than exact matching. For example, use `df['Peril'].str.lower().str.contains('bushfire')` to match 'Bushfire (AU)'.\n"
-            "   - Note: 'Wildfire' (under North America region) and 'Bushfire (AU)' (under Asia Pacific region) are separate records in 'CAT_Exposure.csv'. If the query asks for 'bushfire' generally or specifically, make sure to filter/aggregate accordingly (e.g. 'Bushfire (AU)' has TIV of $18,000 million, AAL of $55 million, 1-in-100 PML of $180 million, and 1-in-250 PML of $310 million)."
+            "9. Peril / Claim Description / Fuzzy Terminology Matching:\n"
+            "   - If looking up or filtering by peril or claim description/loss description (like 'bushfire', 'wildfire', or 'Hurricane Beryl'), perform case-insensitive substring matching rather than exact matching.\n"
+            "   - For claim descriptions/loss events in `df_Claims_Bordereau`, use `.str.lower().str.contains('beryl')` rather than exact match (to match 'Hurricane Beryl - Texas coast').\n"
+            "   - For perils in `df_CAT_Exposure`, use `df['Peril'].str.lower().str.contains('bushfire')` to match 'Bushfire (AU)'.\n"
+            "   - Note: 'Wildfire' (under North America region) and 'Bushfire (AU)' (under Asia Pacific region) are separate records in `df_CAT_Exposure`. If the query asks for 'bushfire' generally or specifically, filter/aggregate accordingly (e.g. 'Bushfire (AU)' has TIV of $18,000 million, AAL of $55 million, 1-in-100 PML of $180 million, and 1-in-250 PML of $310 million)."
         )
 
     guidelines_str = "\n".join(guidelines)
     
     # 4. Construct prompt
-    prompt = f"""You are a professional Python data analyst. Write a clean, correct Python script to compute the relevant statistics, lookup records, or perform actuarial analysis to answer the user's question using pandas on the provided clean CSV files.
+    prompt = f"""You are a professional Python data analyst. Write a clean, correct Python code block to compute the relevant statistics, lookup records, or perform actuarial analysis to answer the user's question using pandas.
 
-Cleaned CSV Schema:
+The following pandas DataFrames are pre-loaded in the environment:
 {schema_str}
-
-File paths for pandas:
-{files_str}
 
 Reference Formulas & Guidelines:
 {guidelines_str}
 
 Instructions:
+- Write Python code that directly operates on the pre-loaded DataFrames listed above. Do NOT load the CSV files using `pd.read_csv` or attempt to read any file from disk.
+- Do NOT import `pandas` or `numpy` unless you need specialized sub-modules (they are already imported as `pd` and `np`).
+- Make sure to print the final answers, tables, or computed metrics clearly using `print()`.
 - Return ONLY the python code block starting with ```python and ending with ```. No other explanation.
 
 User Question: {question}
@@ -206,7 +242,6 @@ Python Code:"""
     # 5. Self-debugging loop
     for attempt in range(1, 4):
         logger.info(f"Ollama execution attempt {attempt} for query: {question}")
-        temp_script_path = None
         try:
             from app.services.ollama_client import ollama_chat
             text = ollama_chat(base_url, model, messages)
@@ -215,48 +250,44 @@ Python Code:"""
             if "```python" in text:
                 code = text.split("```python")[1].split("```")[0]
                 
-            # Create the temporary script file in the OS temp directory to prevent Uvicorn reload
-            with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w", encoding="utf-8") as tf:
-                tf.write(code)
-                temp_script_path = Path(tf.name)
+            # Prepare execution environment
+            import io
+            import contextlib
             
-            # Execute subprocess
-            proc = subprocess.run(
-                [sys.executable, str(temp_script_path)],
-                capture_output=True,
-                text=True,
-                timeout=15
-            )
+            exec_globals = {
+                "pd": pd,
+                "np": np,
+                **preloaded_dfs
+            }
+            exec_locals = {}
+            stdout_buffer = io.StringIO()
             
-            # Clean up temp script immediately
-            if temp_script_path and temp_script_path.exists():
-                try:
-                    temp_script_path.unlink()
-                except Exception:
-                    pass
-            
-            if proc.returncode == 0:
+            def run_exec():
+                exec(code, exec_globals, exec_locals)
+                
+            try:
+                # Redirect stdout and run exec in-process with a timeout
+                with contextlib.redirect_stdout(stdout_buffer):
+                    _run_with_timeout(run_exec, timeout_sec=15)
+                
                 logger.info(f"Pandas Agent succeeded on attempt {attempt}.")
-                script_stdout = proc.stdout.strip()
+                script_stdout = stdout_buffer.getvalue().strip()
                 success = True
                 break
-            else:
-                logger.warning(f"Pandas Agent execution failed on attempt {attempt}. Error:\n{proc.stderr}")
+            except Exception as e:
+                import traceback
+                error_str = traceback.format_exc()
+                logger.warning(f"Pandas Agent execution failed on attempt {attempt}. Error:\n{error_str}")
                 messages.append({"role": "assistant", "content": f"```python\n{code}\n```"})
                 error_msg = (
-                    f"The code execution failed with the following traceback/error:\n{proc.stderr.strip()}\n\n"
-                    f"Please correct the code. Ensure you use correct column names and merge/aggregate correctly. "
+                    f"The code execution failed with the following traceback/error:\n{error_str.strip()}\n\n"
+                    f"Please correct the code. Ensure you use the correct preloaded DataFrame variables and write correct Pandas code. "
                     f"Return ONLY the executable python block."
                 )
                 messages.append({"role": "user", "content": error_msg})
                 
         except Exception as e:
             logger.error(f"Error during execution loop on attempt {attempt}: {e}")
-            if temp_script_path and temp_script_path.exists():
-                try:
-                    temp_script_path.unlink()
-                except Exception:
-                    pass
             messages.append({"role": "user", "content": f"Execution failed with exception: {e}. Please rewrite the code."})
 
     if not success:
