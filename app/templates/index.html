@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Upload documents, build a local RAG index with Ollama, and ask focused questions instantly." />
+    <title>Document Parser — Ollama RAG</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&display=swap" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+
+      <!-- ── Header ─────────────────────────────────────────────────────── -->
+      <header class="hero">
+        <div class="hero-text">
+          <p class="eyebrow">Ollama RAG Workspace</p>
+          <h1>Parse. Index. Ask.</h1>
+          <p class="subtitle">Upload documents, build a local index, and ask focused questions — all running on your machine.</p>
+        </div>
+        <div class="hero-card">
+          <p class="hero-label">Active Session</p>
+          <div id="session-id" class="session-id">None</div>
+          <p id="session-meta" class="session-meta">Upload files to start a session.</p>
+        </div>
+      </header>
+
+      <!-- ── Main two-column layout ─────────────────────────────────────── -->
+      <main class="main-layout">
+
+        <!-- LEFT — Upload ─────────────────────────────────────────────── -->
+        <section class="panel upload-panel" aria-label="Upload documents">
+          <div class="panel-header">
+            <span class="panel-icon">📂</span>
+            <h2>Upload Documents</h2>
+          </div>
+          <p class="helper">Supports PDF, Word, CSV, Excel, TXT, HTML, XML, and images.</p>
+
+          <form id="upload-form" class="stack" novalidate>
+            <label class="file-label" for="file-input">
+              <span class="file-label-icon">⬆</span>
+              <span class="file-label-text">Choose files or drag &amp; drop</span>
+              <input
+                id="file-input"
+                type="file"
+                multiple
+                accept=".pdf,.docx,.txt,.md,.log,.html,.htm,.csv,.xlsx,.xlsm,.xls,.xml,.png,.jpg,.jpeg,.tif,.tiff,.bmp"
+              />
+            </label>
+
+            <button type="submit" class="button" id="build-index-btn">
+              <span class="btn-icon">⚡</span> Build Index
+            </button>
+
+            <p id="upload-status" class="status" role="status" aria-live="polite"></p>
+            <div id="upload-warnings" class="warnings" role="alert"></div>
+
+            <div class="progress-group">
+              <div class="progress-row">
+                <span>Upload</span>
+                <span id="upload-progress-text" class="progress-pct">0%</span>
+              </div>
+              <div class="progress" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                <div id="upload-progress-bar" class="progress-bar"></div>
+              </div>
+              <div class="progress-row">
+                <span id="index-progress-label">Indexing</span>
+                <span id="index-progress-text" class="progress-pct">0%</span>
+              </div>
+              <div class="progress" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                <div id="index-progress-bar" class="progress-bar"></div>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <!-- RIGHT — Ask / Answer / Chart ─────────────────────────────── -->
+        <section class="panel ask-panel" aria-label="Question and answer">
+          <div class="panel-header">
+            <span class="panel-icon">💬</span>
+            <h2>Ask a Question</h2>
+          </div>
+
+          <form id="ask-form" class="ask-form" novalidate>
+            <textarea
+              id="question-input"
+              rows="3"
+              placeholder="Ask anything about the uploaded documents…"
+              aria-label="Your question"
+            ></textarea>
+            <button type="submit" class="button ask-btn" id="ask-btn">
+              <span class="btn-icon">🔍</span> Get Answer
+            </button>
+          </form>
+
+          <!-- Answer -------------------------------------------------- -->
+          <div class="answer-section" id="answer-section">
+            <div class="section-label">
+              <span class="dot dot--answer"></span> Answer
+            </div>
+            <div id="answer-text" class="answer-text" aria-live="polite">No answer yet.</div>
+          </div>
+
+          <!-- Sources ------------------------------------------------- -->
+          <div class="sources-section" id="sources-section">
+            <div class="section-label">
+              <span class="dot dot--sources"></span> Sources
+            </div>
+            <div id="sources-list" class="sources-list">Upload files and ask a question to see sources.</div>
+          </div>
+
+          <!-- Chart (hidden until AI returns a chart_spec) ------------ -->
+          <div id="chart-container" class="chart-container" style="display: none;">
+            <div class="section-label">
+              <span class="dot dot--chart"></span> Chart
+            </div>
+            <div class="chart-wrap">
+              <canvas id="viz-canvas"></canvas>
+            </div>
+          </div>
+        </section>
+
+      </main>
+
+      <footer class="footer">
+        <span>Powered by <strong>Ollama</strong> · runs fully locally · no data leaves your machine.</span>
+      </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
