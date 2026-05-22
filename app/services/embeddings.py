@@ -13,7 +13,7 @@ _MAX_EMBED_CHARS = 7_000
 
 def embed_texts(
     texts: List[str],
-    batch_size: int = 8,
+    batch_size: int = 32,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> List[list[float]]:
     # Drop chunks that are entirely whitespace — Ollama returns 400 for empty input.
@@ -30,7 +30,7 @@ def embed_texts(
     completed_batches = 0
     lock = Lock()
 
-    max_workers = min(8, total_batches)
+    max_workers = min(32, total_batches)
     print(f"[EMBED] Parallelizing embedding generation across {total_batches} batches with {max_workers} workers...")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

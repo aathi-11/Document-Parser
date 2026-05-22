@@ -88,7 +88,9 @@ def _extract_csv(file_path: Path) -> str:
     lines = []
     with file_path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
         reader = csv.reader(handle)
-        for row in reader:
+        for idx, row in enumerate(reader):
+            if idx >= 150:
+                break
             lines.append("\t".join(row))
     return "\n".join(lines)
 
@@ -161,7 +163,7 @@ def _extract_excel(file_path: Path) -> str:
         ws = wb[sheet_name]
         # Collect all rows as lists of strings, preserving empty cells
         raw_rows: List[List[str]] = []
-        for row in ws.iter_rows(values_only=True):
+        for row in ws.iter_rows(max_row=150, values_only=True):
             raw_rows.append([str(cell) if cell is not None else "" for cell in row])
 
         # Trim trailing all-blank columns across all rows
@@ -205,7 +207,7 @@ def _extract_excel_legacy(file_path: Path) -> str:
     xls = pd.ExcelFile(str(file_path), engine="xlrd")
 
     for sheet_name in xls.sheet_names:
-        df = xls.parse(sheet_name, header=None, dtype=str).fillna("")
+        df = xls.parse(sheet_name, header=None, nrows=150, dtype=str).fillna("")
         raw_rows: List[List[str]] = df.values.tolist()  # type: ignore[assignment]
 
         blocks = _detect_table_blocks(raw_rows)

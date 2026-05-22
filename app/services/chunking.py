@@ -52,7 +52,10 @@ def chunk_tabular_text(
             continue
 
         header_line = lines[start_idx]
-        data_rows = lines[start_idx + 1:]
+        # Cap data rows to 100 for embedding. Since tabular queries are executed
+        # via Pandas on the full raw files, the vector store only needs a sample
+        # of the schema and values. This prevents Ollama timeouts on large sheets.
+        data_rows = lines[start_idx + 1 : start_idx + 101]
 
         if not data_rows:
             chunks.append(section[:_MAX_EMBED_CHARS])

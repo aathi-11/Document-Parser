@@ -322,7 +322,7 @@ async def upload_documents(
                 message="Embedding...",
             )
 
-        embeddings = await run_in_threadpool(embed_texts, all_chunks, 8, _embedding_progress)
+        embeddings = await run_in_threadpool(embed_texts, all_chunks, 32, _embedding_progress)
     except Exception as exc:
         _set_progress(
             session_id,
@@ -383,7 +383,7 @@ async def ask_question(payload: AskRequest) -> dict:
         cleaned_dir = session_dir / "cleaned_csvs"
         csv_files = [p for p in cleaned_dir.iterdir() if p.suffix.lower() == ".csv"] if cleaned_dir.exists() else []
         
-        if len(csv_files) > 1:
+        if len(csv_files) >= 1:
             try:
                 tabular_result = await run_in_threadpool(
                     run_tabular_query,
@@ -413,10 +413,17 @@ async def ask_question(payload: AskRequest) -> dict:
                     }
                     for d in details
                 ]
+                tabular_answer = tabular_result.get("answer", "")
+                chart_spec = None
+                if "[CHART_SPEC]" in tabular_answer:
+                    parts = tabular_answer.split("[CHART_SPEC]")
+                    tabular_answer = parts[0].strip()
+                    chart_spec = _parse_chart_spec(parts[1].strip())
+
                 return {
-                    "answer": tabular_result["answer"],
+                    "answer": tabular_answer,
                     "sources": sources,
-                    "chart_spec": None,
+                    "chart_spec": chart_spec,
                 }
 
     # ------------------------------------------------------------------
@@ -477,6 +484,22 @@ async def ask_question(payload: AskRequest) -> dict:
     )
     is_tabular_context = "|" in context
 
+    chart_instruction = (
+        "\n\nIf the question or your answer contains data breakdowns, distributions, comparisons, "
+        "or trends over time (such as values across years, categories, or regions) that would be clearer "
+        "as a visual chart, you MUST append a JSON chart specification at the very end of your response, "
+        "starting with the marker `[CHART_SPEC]` on a new line. "
+        "The JSON must follow this exact schema:\n"
+        "{\n"
+        '  "type": "bar" | "pie" | "donut" | "line" | "area" | "radar" | "scatter" | "bubble" | "funnel" | "waterfall" | "stacked_bar" | "grouped_bar",\n'
+        '  "labels": ["Label A", "Label B", ...],\n'
+        '  "values": [10.5, 20.0, ...],\n'
+        '  "title": "Chart Title"\n'
+        "}\n"
+        "Ensure the JSON is correct, using double quotes, and do not wrap it in markdown code blocks (no ```). "
+        "If a chart is not appropriate or there are no numeric comparisons/breakdowns, do NOT output the `[CHART_SPEC]` marker."
+    )
+
     if is_counting_query and is_tabular_context:
         system_prompt = (
             "Answer using only the provided context. If the answer is not in the context, "
@@ -484,13 +507,13 @@ async def ask_question(payload: AskRequest) -> dict:
             "To count accurately, count the records table by table. "
             "Show each table's matching Policy IDs and count them, "
             "then sum them up for the final answer. Keep explanations to a minimum."
-        )
+        ) + chart_instruction
     else:
         system_prompt = (
             "Answer using only the provided context. If the answer is not in the context, "
             "say you do not know. Be extremely direct and concise. Return only the correct value, "
             "number, or exact answer with no introductory filler, preamble, or conversational explanation."
-        )
+        ) + chart_instruction
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -509,6 +532,10 @@ async def ask_question(payload: AskRequest) -> dict:
         raise HTTPException(status_code=500, detail=f"Chat failed: {exc}")
 
     chart_spec = None
+    if "[CHART_SPEC]" in answer:
+        parts = answer.split("[CHART_SPEC]")
+        answer = parts[0].strip()
+        chart_spec = _parse_chart_spec(parts[1].strip())
 
     sources = [
         {

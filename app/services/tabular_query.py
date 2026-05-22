@@ -229,6 +229,7 @@ Reference Formulas & Guidelines:
 Instructions:
 - Write Python code that directly operates on the pre-loaded DataFrames listed above. Do NOT load the CSV files using `pd.read_csv` or attempt to read any file from disk.
 - Do NOT import `pandas` or `numpy` unless you need specialized sub-modules (they are already imported as `pd` and `np`).
+- Do NOT write code to draw, plot, or display charts or graphs (e.g., do NOT use `matplotlib`, `pyplot`, `plt.show()`, or `df.plot()`). The frontend will handle chart rendering dynamically from the printed outputs.
 - Make sure to print the final answers, tables, or computed metrics clearly using `print()`.
 - Return ONLY the python code block starting with ```python and ending with ```. No other explanation.
 
@@ -253,6 +254,15 @@ Python Code:"""
             # Prepare execution environment
             import io
             import contextlib
+            
+            # Configure matplotlib to run headlessly to prevent GUI popups
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                plt.show = lambda *args, **kwargs: None
+            except Exception:
+                pass
             
             exec_globals = {
                 "pd": pd,
@@ -307,6 +317,15 @@ Instructions:
 - Do not write a long essay or explanation unless the user explicitly asks for qualitative reasoning (e.g. "is it defensible?", "why?"). Even then, keep it strictly to 1-2 direct sentences.
 - Do not mention that a python script was run or show any python code.
 - If the outputs are metrics/exposure numbers, present them directly (e.g., "TIV: $18,000 million, AAL: $55 million, 1-in-100 PML: $180 million, 1-in-250 PML: $310 million").
+- If the outputs or the question contains a data breakdown, distribution, comparison, or trend over time (e.g., values across years, categories, or perils) that would be clearer as a visual chart, you MUST append a JSON chart specification at the very end of your response, starting with the marker `[CHART_SPEC]` on a new line.
+  The JSON must follow this exact schema:
+  {{
+    "type": "bar" | "pie" | "donut" | "line" | "area" | "radar" | "scatter" | "bubble" | "funnel" | "waterfall" | "stacked_bar" | "grouped_bar",
+    "labels": ["Label A", "Label B", ...],
+    "values": [10.5, 20.0, ...],
+    "title": "Chart Title"
+  }}
+  Do not wrap the JSON in markdown code blocks or code fences. If no chart is appropriate or the output doesn't contain a set of values, do NOT output any `[CHART_SPEC]` marker or JSON.
 """
     try:
         from app.services.ollama_client import ollama_chat
