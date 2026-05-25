@@ -156,7 +156,7 @@ def _extract_excel(file_path: Path) -> str:
     """Extract text from .xlsx / .xlsm using openpyxl (no xlrd dependency)."""
     import openpyxl  # lazy import — only needed for Excel files
 
-    wb = openpyxl.load_workbook(str(file_path), data_only=True)
+    wb = openpyxl.load_workbook(str(file_path), data_only=True, read_only=True)
     sections: List[str] = []
 
     for sheet_name in wb.sheetnames:

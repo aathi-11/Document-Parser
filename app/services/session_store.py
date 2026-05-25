@@ -1,5 +1,7 @@
 from pathlib import Path
 import re
+import shutil
+import time
 from typing import Dict, List
 from uuid import uuid4
 
@@ -35,10 +37,6 @@ async def save_upload_files(
     for file in files:
         safe_name = safe_filename(file.filename or "file")
         max_mb = max_bytes // (1024 * 1024) if max_bytes else None
-        size = _get_upload_size(file)
-        if max_bytes is not None and size is not None and size > max_bytes:
-            warnings.append(f"{safe_name}: file too large (max {max_mb} MB).")
-            continue
         file_path = upload_dir / safe_name
         if file_path.exists():
             base = file_path.stem
@@ -61,11 +59,24 @@ async def save_upload_files(
     return saved, warnings
 
 
-def _get_upload_size(file: UploadFile) -> int | None:
-    try:
-        file.file.seek(0, 2)
-        size = file.file.tell()
-        file.file.seek(0)
-        return size
-    except Exception:
-        return None
+def cleanup_old_sessions(storage_dir: Path, ttl_days: int) -> int:
+    if ttl_days <= 0:
+        return 0
+
+    sessions_dir = storage_dir / "sessions"
+    if not sessions_dir.exists():
+        return 0
+
+    cutoff = time.time() - (ttl_days * 24 * 60 * 60)
+    removed = 0
+    for session_path in sessions_dir.iterdir():
+        if not session_path.is_dir():
+            continue
+        try:
+            if session_path.stat().st_mtime < cutoff:
+                shutil.rmtree(session_path, ignore_errors=True)
+                removed += 1
+        except FileNotFoundError:
+            continue
+
+    return removed

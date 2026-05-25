@@ -1,5 +1,4 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from math import ceil
 from threading import Lock
 from typing import Callable, List
 
@@ -30,7 +29,7 @@ def embed_texts(
     completed_batches = 0
     lock = Lock()
 
-    max_workers = min(32, total_batches)
+    max_workers = min(4, total_batches)
     print(f"[EMBED] Parallelizing embedding generation across {total_batches} batches with {max_workers} workers...")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

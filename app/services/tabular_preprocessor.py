@@ -1,9 +1,31 @@
+import hashlib
+import json
+import logging
+from pathlib import Path
+
 import openpyxl
 import pandas as pd
-from pathlib import Path
-import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _hash_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _build_upload_manifest(uploads: list[Path]) -> dict[str, str]:
+    return {upload.name: _hash_file(upload) for upload in uploads}
+
+
+def _load_manifest(path: Path) -> dict[str, str]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 def preprocess_tabular_files(session_dir: Path) -> Path:
     """
@@ -19,17 +41,25 @@ def preprocess_tabular_files(session_dir: Path) -> Path:
         
     cleaned_dir.mkdir(parents=True, exist_ok=True)
     
-    # Caching check: if cleaned files exist and latest upload is older than oldest cleaned file, skip
+    manifest_path = cleaned_dir / "manifest.json"
     uploads = [p for p in upload_dir.iterdir() if p.suffix.lower() in {".xlsx", ".xlsm", ".xls", ".csv"}]
     cleaned_files = [p for p in cleaned_dir.iterdir() if p.suffix.lower() == ".csv"]
-    if uploads and cleaned_files:
-        latest_upload = max(p.stat().st_mtime for p in uploads)
-        oldest_cleaned = min(p.stat().st_mtime for p in cleaned_files)
-        if latest_upload <= oldest_cleaned:
+    current_manifest: dict[str, str] = {}
+    if uploads:
+        try:
+            current_manifest = _build_upload_manifest(uploads)
+        except Exception as exc:
+            logger.error(f"Failed to build upload manifest: {exc}")
+            current_manifest = {}
+
+    if uploads and cleaned_files and current_manifest and manifest_path.exists():
+        cached_manifest = _load_manifest(manifest_path)
+        if cached_manifest == current_manifest:
             logger.info("Cleaned CSVs are up to date, skipping preprocessing.")
             return cleaned_dir
             
     # Process all files
+    had_errors = False
     for filepath in upload_dir.iterdir():
         ext = filepath.suffix.lower()
         if ext not in {".xlsx", ".xlsm", ".xls", ".csv"}:
@@ -61,8 +91,15 @@ def preprocess_tabular_files(session_dir: Path) -> Path:
                 # Excel file
                 _preprocess_excel(filepath, cleaned_dir)
         except Exception as e:
+            had_errors = True
             logger.error(f"Error preprocessing {filepath.name}: {e}", exc_info=True)
-            
+
+    if uploads and current_manifest and not had_errors:
+        try:
+            manifest_path.write_text(json.dumps(current_manifest, indent=2), encoding="utf-8")
+        except OSError as exc:
+            logger.error(f"Failed to write manifest: {exc}")
+
     return cleaned_dir
 
 def _preprocess_excel(filepath: Path, dest_dir: Path) -> None:

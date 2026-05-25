@@ -1,4 +1,5 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 import json
 from pathlib import Path
 import re
@@ -18,7 +19,7 @@ from app.services.chunking import chunk_text
 from app.services.embeddings import embed_texts
 from app.services.extraction import extract_text_from_file
 from app.services.ollama_client import ollama_chat, ollama_embed, ollama_health_check
-from app.services.session_store import create_session_dir, save_upload_files
+from app.services.session_store import cleanup_old_sessions, create_session_dir, save_upload_files
 from app.services.tabular_query import (
     is_aggregation_question,
     run_tabular_query,
@@ -29,7 +30,7 @@ from app.services.vector_store import VectorStore
 
 BASE_DIR = Path(__file__).resolve().parent
 
-SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+SESSION_ID_RE = re.compile(r"[0-9a-f]{32}")
 CHART_TYPES = {
     "pie", "bar", "line", "histogram",
     "scatter", "area", "donut", "bubble",
@@ -72,7 +73,7 @@ def _wants_chart(question: str) -> bool:
 
 def _parse_chart_spec(raw: str) -> dict | None:
     # Strip markdown code fences if the LLM wrapped the JSON
-    cleaned = re.sub(r"^```[a-z]*\n?", "", raw.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"```[a-z]*\n?", "", raw.strip(), flags=re.IGNORECASE)
     cleaned = cleaned.replace("```", "").strip()
 
     try:
@@ -162,7 +163,36 @@ def _get_progress(session_id: str) -> dict | None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     (settings.storage_dir / "sessions").mkdir(parents=True, exist_ok=True)
-    yield
+
+    if settings.session_ttl_days <= 0 or settings.session_cleanup_interval_sec <= 0:
+        yield
+        return
+
+    stop_event = asyncio.Event()
+
+    async def _cleanup_loop() -> None:
+        while not stop_event.is_set():
+            await run_in_threadpool(
+                cleanup_old_sessions,
+                settings.storage_dir,
+                settings.session_ttl_days,
+            )
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(),
+                    timeout=settings.session_cleanup_interval_sec,
+                )
+            except asyncio.TimeoutError:
+                continue
+
+    cleanup_task = asyncio.create_task(_cleanup_loop())
+    try:
+        yield
+    finally:
+        stop_event.set()
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 app = FastAPI(title="Document Parser", lifespan=lifespan)

@@ -1,11 +1,18 @@
+import concurrent.futures
+import contextlib
+import io
 import json
+import logging
+import re
 import subprocess
 import sys
-import requests
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
-import logging
+
+import numpy as np
+import pandas as pd
+import requests
 from app.services.tabular_preprocessor import preprocess_tabular_files
 
 logger = logging.getLogger(__name__)
@@ -23,59 +30,90 @@ COUNT_KEYWORDS = {
     "marine", "loss", "losses"
 }
 
+_KEYWORD_CACHE: dict[str, set[str]] = {}
+_FORBIDDEN_CODE_PATTERNS = [
+    "import os",
+    "import sys",
+    "import subprocess",
+    "import shutil",
+    "open(",
+    "__import__",
+    "eval(",
+    "exec(",
+    "pathlib",
+    "requests",
+]
+
+
+def _build_keyword_set(session_dir: Path) -> set[str]:
+    keywords = set(COUNT_KEYWORDS)
+
+    try:
+        cleaned_dir = session_dir / "cleaned_csvs"
+        if not cleaned_dir.exists():
+            cleaned_dir = preprocess_tabular_files(session_dir)
+
+        if cleaned_dir.exists():
+            for csv_file in cleaned_dir.iterdir():
+                if csv_file.suffix.lower() == ".csv":
+                    name_stem = csv_file.stem.lower()
+                    keywords.add(name_stem)
+                    keywords.update(re.split(r"[^a-zA-Z0-9]", name_stem))
+
+                    try:
+                        df = pd.read_csv(csv_file, nrows=50)
+                        for col in df.columns:
+                            col_str = str(col).lower().strip()
+                            keywords.add(col_str)
+                            keywords.update(
+                                part
+                                for part in re.split(r"[^a-zA-Z0-9]", col_str)
+                                if len(part) > 2
+                            )
+
+                        for col in df.columns:
+                            if df[col].dtype == "object":
+                                unique_vals = df[col].dropna().unique()
+                                for val in unique_vals:
+                                    val_str = str(val).lower().strip()
+                                    keywords.add(val_str)
+                                    keywords.update(
+                                        part
+                                        for part in re.split(r"[^a-zA-Z0-9]", val_str)
+                                        if len(part) > 2
+                                    )
+                    except Exception as exc:
+                        logger.error(
+                            f"Error reading schema of {csv_file.name} for keywords: {exc}"
+                        )
+    except Exception as exc:
+        logger.error(f"Error in dynamic keyword extraction: {exc}")
+
+    return {kw for kw in keywords if len(kw) > 1}
+
+
+def _get_keyword_set(session_dir: Path | None) -> set[str]:
+    if session_dir is None:
+        return set(COUNT_KEYWORDS)
+
+    cache_key = str(session_dir.resolve())
+    cached = _KEYWORD_CACHE.get(cache_key)
+    if cached is None:
+        cached = _build_keyword_set(session_dir)
+        _KEYWORD_CACHE[cache_key] = cached
+    return set(cached)
+
+
+def _ensure_safe_code(code: str) -> None:
+    lowered = code.lower()
+    for pattern in _FORBIDDEN_CODE_PATTERNS:
+        if pattern in lowered:
+            raise RuntimeError(f"Unsafe code detected: blocked pattern '{pattern}'.")
+
 def is_aggregation_question(question: str, session_dir: Path = None) -> bool:
     q_lower = question.lower()
-    
-    # 1. Start with the core set of keywords
-    keywords = set(COUNT_KEYWORDS)
-    
-    # 2. Dynamically extract keywords from the schemas and categories in the session if available
-    if session_dir is not None:
-        try:
-            # First, make sure preprocessed files exist (highly optimized check)
-            cleaned_dir = session_dir / "cleaned_csvs"
-            if not cleaned_dir.exists():
-                cleaned_dir = preprocess_tabular_files(session_dir)
-                
-            if cleaned_dir.exists():
-                import pandas as pd
-                import re
-                for csv_file in cleaned_dir.iterdir():
-                    if csv_file.suffix.lower() == ".csv":
-                        # Add the filename and parts of it
-                        name_stem = csv_file.stem.lower()
-                        keywords.add(name_stem)
-                        keywords.update(re.split(r'[^a-zA-Z0-9]', name_stem))
-                        
-                        try:
-                            # Read header for columns
-                            df = pd.read_csv(csv_file, nrows=50)
-                            for col in df.columns:
-                                col_str = str(col).lower().strip()
-                                keywords.add(col_str)
-                                # Add split parts of column name
-                                keywords.update(part for part in re.split(r'[^a-zA-Z0-9]', col_str) if len(part) > 2)
-                                
-                            # Read some unique string values (like Underwriter names, Perils, Cedents, LOBs)
-                            # to match questions asking about specific entities
-                            for col in df.columns:
-                                if df[col].dtype == 'object':
-                                    # Limit unique value extraction to first 50 rows to keep it fast
-                                    unique_vals = df[col].dropna().unique()
-                                    for val in unique_vals:
-                                        val_str = str(val).lower().strip()
-                                        keywords.add(val_str)
-                                        keywords.update(part for part in re.split(r'[^a-zA-Z0-9]', val_str) if len(part) > 2)
-                        except Exception as e:
-                            logger.error(f"Error reading schema of {csv_file.name} for keywords: {e}")
-        except Exception as e:
-            logger.error(f"Error in dynamic keyword extraction: {e}")
-            
-    # Clean up empty strings or single character keywords
-    keywords = {kw for kw in keywords if len(kw) > 1}
-    
-    # 3. Match using word boundary or substring for multi-word keywords
-    import re
+
+    keywords = _get_keyword_set(session_dir)
     q_words = set(re.findall(r'[a-zA-Z0-9\-]+', q_lower))
     
     for kw in keywords:
@@ -91,7 +129,6 @@ def is_aggregation_question(question: str, session_dir: Path = None) -> bool:
 
 
 def sanitize_df_name(filename: str) -> str:
-    import re
     name = Path(filename).stem
     # Replace non-alphanumeric with underscores
     sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', name)
@@ -102,7 +139,6 @@ def sanitize_df_name(filename: str) -> str:
 
 
 def _run_with_timeout(func, timeout_sec, *args, **kwargs):
-    import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(func, *args, **kwargs)
         try:
@@ -133,9 +169,6 @@ def run_tabular_query(
         return {"handled": False}
         
     # 2. Gather Schema Information & Pre-load Cleaned CSV files as DataFrames
-    import pandas as pd
-    import numpy as np
-    import re
     
     preloaded_dfs = {}
     schema_parts = []
@@ -252,8 +285,6 @@ Python Code:"""
                 code = text.split("```python")[1].split("```")[0]
                 
             # Prepare execution environment
-            import io
-            import contextlib
             
             # Configure matplotlib to run headlessly to prevent GUI popups
             try:
@@ -276,6 +307,7 @@ Python Code:"""
                 exec(code, exec_globals, exec_locals)
                 
             try:
+                _ensure_safe_code(code)
                 # Redirect stdout and run exec in-process with a timeout
                 with contextlib.redirect_stdout(stdout_buffer):
                     _run_with_timeout(run_exec, timeout_sec=15)

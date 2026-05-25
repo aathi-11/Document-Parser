@@ -21,6 +21,8 @@ class Settings:
     fetch_k: int = int(os.getenv("FETCH_K", "15"))
     max_context_chars: int = int(os.getenv("MAX_CONTEXT_CHARS", "620000"))
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "50"))
+    session_ttl_days: int = int(os.getenv("SESSION_TTL_DAYS", "7"))
+    session_cleanup_interval_sec: int = int(os.getenv("SESSION_CLEANUP_INTERVAL_SEC", "3600"))
 
     # ── Groq (set GROQ_API_KEY or set GROK_API_KEY to a gsk_ key to enable) ──
     groq_api_key: str = os.getenv("GROQ_API_KEY", "")

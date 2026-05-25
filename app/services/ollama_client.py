@@ -3,6 +3,8 @@ from typing import List
 import requests
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 def ollama_health_check(base_url: str) -> None:
@@ -65,15 +67,13 @@ def ollama_embed(base_url: str, model: str, texts: str | List[str]) -> List[floa
     dim = len(fetched[0]) if fetched else 0
 
     # Re-insert zero-vectors for any positions that were empty
-    result: List[List[float]] = [[0.0] * dim] * len(texts)
+    result: List[List[float]] = [[0.0] * dim for _ in range(len(texts))]
     for out_pos, orig_pos in enumerate(non_empty_indices):
         result[orig_pos] = fetched[out_pos]
     return result
 
 
 def ollama_chat(base_url: str, model: str, messages: List[dict]) -> str:
-    from app.config import settings
-    
     if settings.groq_api_key:
         logger.info(f"Using Groq API for chat with model: {settings.groq_chat_model}")
         headers = {

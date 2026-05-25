@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
+from cachetools import LRUCache
 
 
-_STORE_CACHE: dict[str, VectorStore] = {}
+_STORE_CACHE: LRUCache = LRUCache(maxsize=20)
 
 
 class VectorStore:
@@ -143,5 +144,7 @@ class VectorStore:
 def _cosine_similarity(embeddings: np.ndarray, query: np.ndarray) -> np.ndarray:
     emb_norms = np.linalg.norm(embeddings, axis=1)
     query_norm = np.linalg.norm(query)
+    if query_norm < 1e-8:
+        raise ValueError("Query embedding is a zero vector.")
     denom = (emb_norms * query_norm) + 1e-8
     return (embeddings @ query) / denom
