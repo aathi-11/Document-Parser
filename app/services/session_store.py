@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import re
 import shutil
@@ -80,3 +81,37 @@ def cleanup_old_sessions(storage_dir: Path, ttl_days: int) -> int:
             continue
 
     return removed
+
+
+def save_summary(session_dir: Path, filename: str, summary_data: dict) -> None:
+    summaries_dir = session_dir / "summaries"
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = safe_filename(filename)
+    summary_path = summaries_dir / f"{safe_name}.summary.json"
+    summary_path.write_text(
+        json.dumps(summary_data, indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+
+def load_summaries(session_dir: Path) -> dict[str, dict]:
+    summaries_dir = session_dir / "summaries"
+    if not summaries_dir.exists():
+        return {}
+
+    summaries: dict[str, dict] = {}
+    for summary_path in summaries_dir.glob("*.summary.json"):
+        try:
+            raw = summary_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        name = summary_path.name
+        if name.endswith(".summary.json"):
+            key = name[: -len(".summary.json")]
+        else:
+            key = summary_path.stem
+        summaries[key] = data
+
+    return summaries

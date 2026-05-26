@@ -19,10 +19,19 @@ from app.services.chunking import chunk_text
 from app.services.embeddings import embed_texts
 from app.services.extraction import extract_text_from_file
 from app.services.ollama_client import ollama_chat, ollama_embed, ollama_health_check
-from app.services.session_store import cleanup_old_sessions, create_session_dir, save_upload_files
+from app.services.session_store import (
+    cleanup_old_sessions,
+    create_session_dir,
+    load_summaries,
+    save_summary,
+    save_upload_files,
+)
+from app.services.summariser import summarise_document
 from app.services.tabular_query import (
     invalidate_keyword_cache,
+    is_cross_reference_question,
     is_aggregation_question,
+    run_cross_reference_query,
     run_tabular_query,
     TABULAR_EXTS,
 )
@@ -221,6 +230,16 @@ def get_progress(session_id: str) -> dict:
     return data
 
 
+@app.get("/api/summaries/{session_id}")
+async def get_summaries(session_id: str) -> dict:
+    session_id = _validate_session_id(session_id)
+    session_dir = settings.storage_dir / "sessions" / session_id
+    if not session_dir.exists():
+        raise HTTPException(status_code=404, detail="Session not found.")
+    summaries = await run_in_threadpool(load_summaries, session_dir)
+    return {"summaries": summaries}
+
+
 @app.post("/api/upload")
 async def upload_documents(
     files: List[UploadFile] = File(...),
@@ -313,6 +332,18 @@ async def upload_documents(
                 all_chunks.append(chunk)
                 all_meta.append({"file_name": saved["filename"], "chunk_index": idx})
 
+            try:
+                summary_data = await run_in_threadpool(
+                    summarise_document,
+                    text,
+                    saved["filename"],
+                    settings.ollama_base_url,
+                    settings.ollama_chat_model,
+                )
+                await run_in_threadpool(save_summary, session_dir, saved["filename"], summary_data)
+            except Exception:
+                pass
+
         processed_files += 1
         percent = int((processed_files / total_files) * 70)
         _set_progress(
@@ -387,6 +418,8 @@ async def upload_documents(
         message="Completed",
     )
 
+    summaries = await run_in_threadpool(load_summaries, session_dir)
+
     return {
         "session_id": session_id,
         "files": [saved["filename"] for saved in saved_files],
@@ -394,6 +427,7 @@ async def upload_documents(
         "chunks_total": len(store.chunks),
         "warnings": warnings,
         "appended": append_to_session,
+        "summaries": summaries,
     }
 
 
@@ -412,6 +446,38 @@ async def ask_question(payload: AskRequest) -> dict:
     has_tabular_uploads = upload_dir.exists() and any(
         p.suffix.lower() in TABULAR_EXTS for p in upload_dir.iterdir()
     )
+
+    if has_tabular_uploads and is_cross_reference_question(payload.question, session_dir):
+        try:
+            cross_result = await run_in_threadpool(
+                run_cross_reference_query,
+                session_dir,
+                payload.question,
+                settings.ollama_base_url,
+                settings.ollama_chat_model,
+            )
+        except Exception:
+            cross_result = {"handled": False}
+
+        if cross_result.get("handled"):
+            answer = cross_result.get("answer", "")
+            chart_spec = None
+            if "[CHART_SPEC]" in answer:
+                parts = answer.split("[CHART_SPEC]")
+                answer = parts[0].strip()
+                chart_spec = _parse_chart_spec(parts[1].strip())
+            return {
+                "answer": answer,
+                "sources": [
+                    {
+                        "file_name": "Multi-file cross-reference",
+                        "chunk_index": 0,
+                        "score": 1.0,
+                        "snippet": "",
+                    }
+                ],
+                "chart_spec": chart_spec,
+            }
 
     if has_tabular_uploads and is_aggregation_question(payload.question, session_dir):
         cleaned_dir = session_dir / "cleaned_csvs"

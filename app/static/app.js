@@ -111,6 +111,93 @@ function renderWarnings(warnings) {
   });
 }
 
+function renderSummaryCards(summaries) {
+  const askPanel = document.querySelector(".ask-panel");
+  if (!askPanel) return;
+
+  let panel = document.getElementById("summary-panel");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "summary-panel";
+    if (askForm) {
+      askPanel.insertBefore(panel, askForm);
+    } else {
+      askPanel.prepend(panel);
+    }
+  }
+
+  panel.innerHTML = "";
+  const entries = summaries && typeof summaries === "object"
+    ? Object.entries(summaries)
+    : [];
+  if (!entries.length) {
+    panel.style.display = "none";
+    return;
+  }
+  panel.style.display = "flex";
+
+  entries.forEach(([filename, data]) => {
+    const card = document.createElement("details");
+    card.className = "summary-card";
+
+    const header = document.createElement("summary");
+    const icon = document.createElement("span");
+    icon.className = "summary-icon";
+    icon.textContent = "DOC";
+    const name = document.createElement("span");
+    name.className = "summary-name";
+    name.textContent = filename;
+
+    header.appendChild(icon);
+    header.appendChild(name);
+
+    const topics = Array.isArray(data?.topics) ? data.topics : [];
+    if (topics.length) {
+      const firstTopic = document.createElement("span");
+      firstTopic.className = "topic-pill";
+      firstTopic.textContent = topics[0];
+      header.appendChild(firstTopic);
+    }
+
+    card.appendChild(header);
+
+    const summaryText = document.createElement("p");
+    summaryText.className = "summary-text";
+    summaryText.textContent = typeof data?.summary === "string"
+      ? data.summary
+      : "Summary unavailable.";
+    card.appendChild(summaryText);
+
+    if (topics.length) {
+      const topicsWrap = document.createElement("div");
+      topicsWrap.className = "summary-topics";
+      topics.forEach((topic) => {
+        const pill = document.createElement("span");
+        pill.className = "topic-pill";
+        pill.textContent = topic;
+        topicsWrap.appendChild(pill);
+      });
+      card.appendChild(topicsWrap);
+    }
+
+    panel.appendChild(card);
+  });
+}
+
+async function fetchSummaries(currentSessionId) {
+  if (!currentSessionId) return;
+  try {
+    const response = await fetch(`/api/summaries/${currentSessionId}`);
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data && data.summaries) {
+      renderSummaryCards(data.summaries);
+    }
+  } catch (error) {
+    // Ignore summary fetch errors; summaries are optional.
+  }
+}
+
 
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
@@ -645,6 +732,11 @@ uploadForm.addEventListener("submit", async (event) => {
     }
     setStatus("Index ready. Ask a question.");
     renderWarnings(data.warnings);
+    const summaries = data.summaries || {};
+    renderSummaryCards(summaries);
+    if (!summaries || Object.keys(summaries).length === 0) {
+      fetchSummaries(sessionId);
+    }
     selectedFiles = Array.from(fileInput.files || []);
   };
 
@@ -700,7 +792,12 @@ askForm.addEventListener("submit", async (event) => {
       sourcesList.innerHTML = "";
       data.sources.forEach((source) => {
         const item = document.createElement("div");
-        item.textContent = `${source.file_name} (chunk ${source.chunk_index})`; 
+        if (source.file_name === "Multi-file cross-reference") {
+          item.className = "cross-file-badge";
+          item.textContent = "Cross-file analysis";
+        } else {
+          item.textContent = `${source.file_name} (chunk ${source.chunk_index})`;
+        }
         sourcesList.appendChild(item);
       });
     } else {
