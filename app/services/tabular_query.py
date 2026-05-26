@@ -1,18 +1,18 @@
-import concurrent.futures
-import contextlib
-import io
+import ast
+import base64
 import json
 import logging
+import pickle
 import re
 import subprocess
 import sys
-import tempfile
+import textwrap
 from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
-import requests
+from app.services.ollama_client import ollama_chat
 from app.services.tabular_preprocessor import preprocess_tabular_files
 
 logger = logging.getLogger(__name__)
@@ -31,18 +31,36 @@ COUNT_KEYWORDS = {
 }
 
 _KEYWORD_CACHE: dict[str, set[str]] = {}
-_FORBIDDEN_CODE_PATTERNS = [
-    "import os",
-    "import sys",
-    "import subprocess",
-    "import shutil",
-    "open(",
-    "__import__",
-    "eval(",
-    "exec(",
+_FORBIDDEN_IMPORTS = {
+    "builtins",
+    "importlib",
+    "os",
     "pathlib",
     "requests",
-]
+    "shutil",
+    "subprocess",
+    "sys",
+}
+_FORBIDDEN_CALLS = {
+    "__import__",
+    "compile",
+    "eval",
+    "exec",
+    "input",
+    "open",
+    "read_csv",
+    "read_excel",
+    "read_feather",
+    "read_parquet",
+    "read_pickle",
+    "to_csv",
+    "to_excel",
+    "to_parquet",
+    "to_pickle",
+    "to_sql",
+}
+_FORBIDDEN_NAMES = _FORBIDDEN_IMPORTS | {"__builtins__"}
+_FORBIDDEN_ATTRS = {"__builtins__", "__import__"}
 
 
 def _build_keyword_set(session_dir: Path) -> set[str]:
@@ -104,11 +122,50 @@ def _get_keyword_set(session_dir: Path | None) -> set[str]:
     return set(cached)
 
 
+def invalidate_keyword_cache(session_dir: Path | None) -> None:
+    if session_dir is None:
+        return
+    cache_key = str(session_dir.resolve())
+    _KEYWORD_CACHE.pop(cache_key, None)
+
+
+def _get_call_name(func: ast.expr) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
 def _ensure_safe_code(code: str) -> None:
-    lowered = code.lower()
-    for pattern in _FORBIDDEN_CODE_PATTERNS:
-        if pattern in lowered:
-            raise RuntimeError(f"Unsafe code detected: blocked pattern '{pattern}'.")
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        raise RuntimeError(f"Invalid python code: {exc}") from exc
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            raise RuntimeError("Unsafe code detected: import statements are not allowed.")
+        if isinstance(node, ast.Name) and node.id in _FORBIDDEN_NAMES:
+            raise RuntimeError(f"Unsafe code detected: blocked name '{node.id}'.")
+        if isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_ATTRS:
+            raise RuntimeError(f"Unsafe code detected: blocked attribute '{node.attr}'.")
+        if isinstance(node, ast.Call):
+            call_name = _get_call_name(node.func)
+            if call_name in _FORBIDDEN_CALLS:
+                raise RuntimeError(f"Unsafe code detected: blocked call '{call_name}'.")
+            if call_name == "getattr" and len(node.args) >= 2:
+                target = node.args[0]
+                attr = node.args[1]
+                target_name = target.id if isinstance(target, ast.Name) else None
+                if target_name in {"__builtins__", "builtins"}:
+                    raise RuntimeError("Unsafe code detected: blocked builtins access.")
+                if (
+                    isinstance(attr, ast.Constant)
+                    and isinstance(attr.value, str)
+                    and attr.value in _FORBIDDEN_CALLS
+                ):
+                    raise RuntimeError("Unsafe code detected: blocked dynamic call.")
 
 def is_aggregation_question(question: str, session_dir: Path = None) -> bool:
     q_lower = question.lower()
@@ -138,13 +195,80 @@ def sanitize_df_name(filename: str) -> str:
     return f"df_{sanitized}"
 
 
-def _run_with_timeout(func, timeout_sec, *args, **kwargs):
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
-        try:
-            return future.result(timeout=timeout_sec)
-        except concurrent.futures.TimeoutError:
-            raise RuntimeError(f"Execution timed out after {timeout_sec} seconds.")
+def _run_code_in_subprocess(
+    code: str,
+    preloaded_dfs: Dict[str, pd.DataFrame],
+    timeout_sec: int,
+) -> str:
+    payload = pickle.dumps(preloaded_dfs, protocol=pickle.HIGHEST_PROTOCOL)
+    stdin_data = base64.b64encode(payload)
+    safe_builtin_names = [
+        "abs",
+        "all",
+        "any",
+        "bool",
+        "dict",
+        "enumerate",
+        "float",
+        "int",
+        "len",
+        "list",
+        "max",
+        "min",
+        "print",
+        "range",
+        "round",
+        "set",
+        "sorted",
+        "str",
+        "sum",
+        "tuple",
+        "zip",
+    ]
+
+    wrapper = textwrap.dedent(
+        f"""
+        import base64
+        import pickle
+        import sys
+        import numpy as np
+        import pandas as pd
+
+        def _blocked_import(*_args, **_kwargs):
+            raise RuntimeError("Imports are disabled in the sandbox.")
+
+        _builtin_src = __builtins__ if isinstance(__builtins__, dict) else __builtins__.__dict__
+        _SAFE_BUILTINS = {{"__import__": _blocked_import}}
+        for _name in {safe_builtin_names!r}:
+            if _name in _builtin_src:
+                _SAFE_BUILTINS[_name] = _builtin_src[_name]
+
+        _payload = base64.b64decode(sys.stdin.buffer.read())
+        _dfs = pickle.loads(_payload)
+        _globals = {{"pd": pd, "np": np, **_dfs, "__builtins__": _SAFE_BUILTINS}}
+        _locals = {{}}
+        _code = {json.dumps(code)}
+        exec(_code, _globals, _locals)
+        """
+    ).strip()
+
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", wrapper],
+            input=stdin_data,
+            capture_output=True,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Execution timed out after {timeout_sec} seconds.") from exc
+
+    stdout_text = completed.stdout.decode("utf-8", errors="replace")
+    stderr_text = completed.stderr.decode("utf-8", errors="replace")
+    if completed.returncode != 0:
+        detail = stderr_text.strip() or stdout_text.strip() or "Sandbox execution failed."
+        raise RuntimeError(detail)
+
+    return stdout_text.strip()
 
 
 def run_tabular_query(
@@ -277,43 +401,16 @@ Python Code:"""
     for attempt in range(1, 4):
         logger.info(f"Ollama execution attempt {attempt} for query: {question}")
         try:
-            from app.services.ollama_client import ollama_chat
             text = ollama_chat(base_url, model, messages)
             
             code = text
             if "```python" in text:
                 code = text.split("```python")[1].split("```")[0]
                 
-            # Prepare execution environment
-            
-            # Configure matplotlib to run headlessly to prevent GUI popups
-            try:
-                import matplotlib
-                matplotlib.use('Agg')
-                import matplotlib.pyplot as plt
-                plt.show = lambda *args, **kwargs: None
-            except Exception:
-                pass
-            
-            exec_globals = {
-                "pd": pd,
-                "np": np,
-                **preloaded_dfs
-            }
-            exec_locals = {}
-            stdout_buffer = io.StringIO()
-            
-            def run_exec():
-                exec(code, exec_globals, exec_locals)
-                
             try:
                 _ensure_safe_code(code)
-                # Redirect stdout and run exec in-process with a timeout
-                with contextlib.redirect_stdout(stdout_buffer):
-                    _run_with_timeout(run_exec, timeout_sec=15)
-                
+                script_stdout = _run_code_in_subprocess(code, preloaded_dfs, timeout_sec=15)
                 logger.info(f"Pandas Agent succeeded on attempt {attempt}.")
-                script_stdout = stdout_buffer.getvalue().strip()
                 success = True
                 break
             except Exception as e:
@@ -360,7 +457,6 @@ Instructions:
   Do not wrap the JSON in markdown code blocks or code fences. If no chart is appropriate or the output doesn't contain a set of values, do NOT output any `[CHART_SPEC]` marker or JSON.
 """
     try:
-        from app.services.ollama_client import ollama_chat
         synthesis_text = ollama_chat(base_url, model, [{"role": "user", "content": synthesis_prompt}])
         
         return {

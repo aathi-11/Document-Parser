@@ -21,6 +21,7 @@ from app.services.extraction import extract_text_from_file
 from app.services.ollama_client import ollama_chat, ollama_embed, ollama_health_check
 from app.services.session_store import cleanup_old_sessions, create_session_dir, save_upload_files
 from app.services.tabular_query import (
+    invalidate_keyword_cache,
     is_aggregation_question,
     run_tabular_query,
     TABULAR_EXTS,
@@ -262,6 +263,9 @@ async def upload_documents(
         session_dir, files, max_bytes=max_bytes
     )
     warnings.extend(save_warnings)
+
+    if saved_files:
+        invalidate_keyword_cache(session_dir)
 
     total_files = len(saved_files)
     if total_files == 0:
