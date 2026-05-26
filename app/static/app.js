@@ -22,6 +22,8 @@ const chartContainer = document.getElementById("chart-container");
 const vizCanvas = document.getElementById("viz-canvas");
 let chartInstance = null;
 let indexPoller = null;
+let indexPollerSession = null;
+let indexPollerToken = 0;
 
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message;
@@ -56,13 +58,18 @@ function stopIndexPolling() {
     clearInterval(indexPoller);
     indexPoller = null;
   }
+  indexPollerSession = null;
+  indexPollerToken += 1;
 }
 
-async function pollIndexProgress(currentSessionId) {
+async function pollIndexProgress(currentSessionId, pollToken) {
+  if (pollToken !== indexPollerToken || currentSessionId !== indexPollerSession) return;
   try {
     const response = await fetch(`/api/progress/${currentSessionId}`);
+    if (pollToken !== indexPollerToken || currentSessionId !== indexPollerSession) return;
     if (!response.ok) return;
     const data = await response.json();
+    if (pollToken !== indexPollerToken || currentSessionId !== indexPollerSession) return;
     if (typeof data.percent === "number") {
       setProgress(indexProgressBar, indexProgressText, data.percent);
     }
@@ -79,14 +86,18 @@ async function pollIndexProgress(currentSessionId) {
       stopIndexPolling();
     }
   } catch (error) {
-    stopIndexPolling();
+    if (pollToken === indexPollerToken && currentSessionId === indexPollerSession) {
+      stopIndexPolling();
+    }
   }
 }
 
 function startIndexPolling(currentSessionId) {
   stopIndexPolling();
+  indexPollerSession = currentSessionId;
+  const pollToken = indexPollerToken;
   indexPoller = setInterval(() => {
-    pollIndexProgress(currentSessionId);
+    pollIndexProgress(currentSessionId, pollToken);
   }, 800);
 }
 
