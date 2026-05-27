@@ -1,4 +1,5 @@
 import ast
+import concurrent.futures
 import base64
 import json
 import logging
@@ -167,6 +168,15 @@ def _ensure_safe_code(code: str) -> None:
                 ):
                     raise RuntimeError("Unsafe code detected: blocked dynamic call.")
 
+
+def _run_with_timeout(func, timeout_sec: int) -> None:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func)
+        try:
+            future.result(timeout=timeout_sec)
+        except concurrent.futures.TimeoutError as exc:
+            raise RuntimeError(f"Execution timed out after {timeout_sec} seconds.") from exc
+
 def is_aggregation_question(question: str, session_dir: Path = None) -> bool:
     q_lower = question.lower()
 
@@ -299,7 +309,7 @@ def _run_code_in_subprocess(
 
     try:
         completed = subprocess.run(
-            [sys.executable, "-I", "-S", "-c", wrapper],
+            [sys.executable, "-I", "-c", wrapper],
             input=stdin_data,
             capture_output=True,
             timeout=timeout_sec,

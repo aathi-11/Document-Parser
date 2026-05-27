@@ -9,7 +9,7 @@ from typing import List
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -18,6 +18,11 @@ from app.models import AskRequest
 from app.services.chunking import chunk_text
 from app.services.embeddings import embed_texts
 from app.services.extraction import extract_text_from_file
+from app.services.excel_editor import (
+    get_edited_file_path,
+    is_edit_question,
+    run_excel_edit,
+)
 from app.services.ollama_client import ollama_chat, ollama_embed, ollama_health_check
 from app.services.session_store import (
     cleanup_old_sessions,
@@ -447,6 +452,34 @@ async def ask_question(payload: AskRequest) -> dict:
         p.suffix.lower() in TABULAR_EXTS for p in upload_dir.iterdir()
     )
 
+    if has_tabular_uploads and is_edit_question(payload.question):
+        try:
+            edit_result = await run_in_threadpool(
+                run_excel_edit,
+                session_dir,
+                payload.question,
+                settings.ollama_base_url,
+                settings.ollama_chat_model,
+            )
+        except Exception:
+            edit_result = {"handled": False}
+
+        if edit_result.get("handled"):
+            return {
+                "answer": (
+                    f"Done. The modified file has {edit_result['row_count']} rows "
+                    f"and {edit_result['col_count']} columns."
+                ),
+                "sources": [],
+                "chart_spec": None,
+                "edit_result": {
+                    "filename": edit_result["filename"],
+                    "download_url": f"/api/download/{session_id}/{edit_result['filename']}",
+                    "preview": edit_result["preview"],
+                    "columns": edit_result["columns"],
+                },
+            }
+
     if has_tabular_uploads and is_cross_reference_question(payload.question, session_dir):
         try:
             cross_result = await run_in_threadpool(
@@ -648,3 +681,45 @@ async def ask_question(payload: AskRequest) -> dict:
     ]
 
     return {"answer": answer, "sources": sources, "chart_spec": chart_spec}
+
+
+@app.post("/api/edit")
+async def edit_document(payload: AskRequest) -> dict:
+    session_id = _validate_session_id(payload.session_id)
+    session_dir = settings.storage_dir / "sessions" / session_id
+    if not session_dir.exists():
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    try:
+        result = await run_in_threadpool(
+            run_excel_edit,
+            session_dir,
+            payload.question,
+            settings.ollama_base_url,
+            settings.ollama_chat_model,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Edit failed: {exc}")
+
+    if not result.get("handled"):
+        raise HTTPException(status_code=422, detail="Could not perform the requested edit.")
+
+    return result
+
+
+@app.get("/api/download/{session_id}/{filename}")
+async def download_edited_file(session_id: str, filename: str):
+    session_id = _validate_session_id(session_id)
+    session_dir = settings.storage_dir / "sessions" / session_id
+    if not session_dir.exists():
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    file_path = get_edited_file_path(session_dir, filename)
+    if file_path is None:
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )

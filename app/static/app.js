@@ -184,6 +184,87 @@ function renderSummaryCards(summaries) {
   });
 }
 
+function renderEditResult(editResult, currentSessionId) {
+  const answerBubble = document.getElementById("answer-text");
+  if (!answerBubble) return;
+
+  const existing = answerBubble.querySelector(".edit-result-card");
+  if (existing) existing.remove();
+
+  const card = document.createElement("div");
+  card.className = "edit-result-card";
+
+  const heading = document.createElement("h4");
+  heading.textContent = "Modified File Ready";
+  card.appendChild(heading);
+
+  const columns = Array.isArray(editResult?.columns) ? editResult.columns : [];
+  if (columns.length) {
+    const pills = document.createElement("div");
+    pills.className = "column-pills";
+    columns.forEach((col) => {
+      const pill = document.createElement("span");
+      pill.className = "column-pill";
+      pill.textContent = String(col);
+      pills.appendChild(pill);
+    });
+    card.appendChild(pills);
+  }
+
+  const preview = Array.isArray(editResult?.preview) ? editResult.preview : [];
+  if (preview.length) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "preview-table-wrapper";
+
+    const table = document.createElement("table");
+    table.className = "preview-table";
+
+    const headers = Object.keys(preview[0] || {});
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    headers.forEach((header) => {
+      const th = document.createElement("th");
+      th.textContent = header;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    preview.forEach((row) => {
+      const tr = document.createElement("tr");
+      headers.forEach((header) => {
+        const td = document.createElement("td");
+        const value = row ? row[header] : "";
+        td.textContent = value === null || value === undefined ? "" : String(value);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+
+    wrapper.appendChild(table);
+    card.appendChild(wrapper);
+  }
+
+  const download = document.createElement("a");
+  download.className = "download-btn";
+  const fallbackUrl = editResult?.filename
+    ? `/api/download/${currentSessionId}/${editResult.filename}`
+    : "#";
+  download.href = editResult?.download_url || fallbackUrl;
+  download.setAttribute("download", editResult?.filename || "edited.xlsx");
+
+  const icon = document.createElement("span");
+  icon.textContent = "↓";
+  icon.setAttribute("aria-hidden", "true");
+  download.appendChild(icon);
+  download.appendChild(document.createTextNode("Download Excel File"));
+
+  card.appendChild(download);
+  answerBubble.appendChild(card);
+}
+
 async function fetchSummaries(currentSessionId) {
   if (!currentSessionId) return;
   try {
@@ -788,6 +869,13 @@ askForm.addEventListener("submit", async (event) => {
     answerText.textContent = (data.answer || "No answer returned.")
       .replace(/\[[\w.:]+\]/g, "")
       .trim();
+
+    if (data.edit_result) {
+      renderEditResult(data.edit_result, sessionId);
+    } else {
+      const existing = answerText.querySelector(".edit-result-card");
+      if (existing) existing.remove();
+    }
     if (data.sources && data.sources.length) {
       sourcesList.innerHTML = "";
       data.sources.forEach((source) => {
