@@ -481,6 +481,17 @@ textarea {
   background: #fafafa;
 }
 
+.preview-ellipsis td {
+  text-align: center;
+  font-style: italic;
+  color: var(--muted);
+  background: #f8f9fa;
+}
+
+.preview-ellipsis:hover td {
+  background: #f8f9fa;
+}
+
 .download-btn {
   display: inline-flex;
   align-items: center;
@@ -681,4 +692,133 @@ span.topic-pill {
   .panel { padding: 22px 18px; }
 
   .hero h1 { font-size: 2rem; }
+}
+
+/* Excel Visualization & Dashboard Styles */
+.viz-result-card {
+  border-left: 4px solid #2563eb;
+}
+
+.combined-result-card {
+  border-left: 4px solid #2E7D32;
+}
+
+.combined-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.combined-stat-box {
+  background: #f0fdf4;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+  border: 1px solid #bbf7d0;
+}
+
+.combined-stat-icon {
+  font-size: 1.4rem;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.combined-stat-number {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: #15803d;
+  display: block;
+}
+
+.combined-stat-label {
+  font-size: 0.7rem;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.viz-stats-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.viz-stat-box {
+  background: #f0f4ff;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+}
+
+.viz-stat-number {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #2563eb;
+  display: block;
+}
+
+.viz-stat-label {
+  font-size: 0.75rem;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sheet-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.sheet-pill {
+  background: #f0f2f5;
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  color: #555;
+}
+
+.sheet-pill.dashboard {
+  background: #d1fae5;
+  color: #065f46;
+  font-weight: 600;
+}
+
+.sheet-pill.original {
+  background: #1F3864;
+  color: white;
+  font-weight: 600;
+}
+
+.sheet-pill.pivot {
+  background: #2E7D32;
+  color: white;
+  font-weight: 600;
+}
+
+.sheet-pill.dashboard-blue {
+  background: #2563EB;
+  color: white;
+  font-weight: 600;
+}
+
+.dashboard-banner {
+  background: #ecfdf5;
+  border: 1px solid #6ee7b7;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  color: #065f46;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.download-btn-combined {
+  background: #15803d;
+}
+
+.download-btn-combined:hover {
+  background: #166534;
 }

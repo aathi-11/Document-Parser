@@ -191,6 +191,16 @@ function renderEditResult(editResult, currentSessionId) {
   const existing = answerBubble.querySelector(".edit-result-card");
   if (existing) existing.remove();
 
+  if (editResult.type === "combined") {
+    renderCombinedResult(editResult);
+    return;
+  }
+
+  if (editResult.type === "visualization") {
+    renderVisualizationResult(editResult);
+    return;
+  }
+
   const card = document.createElement("div");
   card.className = "edit-result-card";
 
@@ -241,6 +251,17 @@ function renderEditResult(editResult, currentSessionId) {
       });
       tbody.appendChild(tr);
     });
+
+    const totalRows = Number(editResult?.row_count);
+    if (Number.isFinite(totalRows) && totalRows > preview.length) {
+      const tr = document.createElement("tr");
+      tr.className = "preview-ellipsis";
+      const td = document.createElement("td");
+      td.colSpan = Math.max(headers.length, 1);
+      td.textContent = `... ${totalRows - preview.length} more rows`;
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
     table.appendChild(tbody);
 
     wrapper.appendChild(table);
@@ -260,6 +281,229 @@ function renderEditResult(editResult, currentSessionId) {
   icon.setAttribute("aria-hidden", "true");
   download.appendChild(icon);
   download.appendChild(document.createTextNode("Download Excel File"));
+
+  card.appendChild(download);
+  answerBubble.appendChild(card);
+}
+
+function renderCombinedResult(editResult) {
+  const answerBubble = document.getElementById("answer-text");
+  if (!answerBubble) return;
+
+  const existing = answerBubble.querySelector(".edit-result-card");
+  if (existing) existing.remove();
+
+  const card = document.createElement("div");
+  card.className = "edit-result-card combined-result-card";
+
+  const heading = document.createElement("h4");
+  heading.textContent = "📥 Combined Excel File Ready";
+  card.appendChild(heading);
+
+  const statsGrid = document.createElement("div");
+  statsGrid.className = "combined-stats-grid";
+
+  const statItems = [
+    { icon: "📄", number: editResult.original_rows, label: "Original Rows" },
+    { icon: "🔄", number: editResult.pivot_rows, label: "Pivot Rows" },
+    { icon: "📊", number: editResult.total_charts, label: "Charts" },
+  ];
+
+  statItems.forEach((stat) => {
+    const box = document.createElement("div");
+    box.className = "combined-stat-box";
+
+    const icon = document.createElement("span");
+    icon.className = "combined-stat-icon";
+    icon.textContent = stat.icon;
+
+    const number = document.createElement("span");
+    number.className = "combined-stat-number";
+    number.textContent = stat.number ?? 0;
+
+    const label = document.createElement("span");
+    label.className = "combined-stat-label";
+    label.textContent = stat.label;
+
+    box.appendChild(icon);
+    box.appendChild(number);
+    box.appendChild(label);
+    statsGrid.appendChild(box);
+  });
+
+  card.appendChild(statsGrid);
+
+  const sheets = Array.isArray(editResult.sheet_names) ? editResult.sheet_names : [];
+  if (sheets.length) {
+    const sheetSection = document.createElement("div");
+    sheetSection.style.marginTop = "8px";
+
+    const label = document.createElement("div");
+    label.style.fontSize = "0.85rem";
+    label.style.fontWeight = "600";
+    label.style.color = "#374151";
+    label.style.marginBottom = "6px";
+    label.textContent = "Sheets in this file:";
+    sheetSection.appendChild(label);
+
+    const pills = document.createElement("div");
+    pills.className = "sheet-pills";
+    sheets.forEach((sheetName) => {
+      const pill = document.createElement("span");
+      pill.className = "sheet-pill";
+      if (sheetName === "Original Data") {
+        pill.classList.add("original");
+      } else if (sheetName === "Pivot Table") {
+        pill.classList.add("pivot");
+      } else if (sheetName === "Dashboard") {
+        pill.classList.add("dashboard-blue");
+      }
+      pill.textContent = String(sheetName);
+      pills.appendChild(pill);
+    });
+    sheetSection.appendChild(pills);
+    card.appendChild(sheetSection);
+  }
+
+  const preview = Array.isArray(editResult?.preview) ? editResult.preview : [];
+  if (preview.length) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "preview-table-wrapper";
+
+    const table = document.createElement("table");
+    table.className = "preview-table";
+
+    const headers = Object.keys(preview[0] || {});
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    headers.forEach((header) => {
+      const th = document.createElement("th");
+      th.textContent = header;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    preview.forEach((row) => {
+      const tr = document.createElement("tr");
+      headers.forEach((header) => {
+        const td = document.createElement("td");
+        const value = row ? row[header] : "";
+        td.textContent = value === null || value === undefined ? "" : String(value);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+
+    wrapper.appendChild(table);
+    card.appendChild(wrapper);
+  }
+
+  const download = document.createElement("a");
+  download.className = "download-btn download-btn-combined";
+  download.href = editResult.download_url || "#";
+  download.setAttribute("download", editResult.filename || "combined.xlsx");
+  download.textContent = "⬇ Download Combined Excel";
+
+  card.appendChild(download);
+  answerBubble.appendChild(card);
+}
+
+function renderVisualizationResult(editResult) {
+  const answerBubble = document.getElementById("answer-text");
+  if (!answerBubble) return;
+
+  const existing = answerBubble.querySelector(".edit-result-card");
+  if (existing) existing.remove();
+
+  const card = document.createElement("div");
+  card.className = "edit-result-card viz-result-card";
+
+  const heading = document.createElement("h4");
+  heading.textContent = "📊 Excel Dashboard Ready";
+  card.appendChild(heading);
+
+  // stats row
+  const statsRow = document.createElement("div");
+  statsRow.className = "viz-stats-row";
+
+  const statBox1 = document.createElement("div");
+  statBox1.className = "viz-stat-box";
+  const num1 = document.createElement("span");
+  num1.className = "viz-stat-number";
+  num1.textContent = editResult.total_charts;
+  const label1 = document.createElement("span");
+  label1.className = "viz-stat-label";
+  label1.textContent = "Charts Created";
+  statBox1.appendChild(num1);
+  statBox1.appendChild(label1);
+
+  const statBox2 = document.createElement("div");
+  statBox2.className = "viz-stat-box";
+  const num2 = document.createElement("span");
+  num2.className = "viz-stat-number";
+  num2.textContent = editResult.columns ? editResult.columns.length : 0;
+  const label2 = document.createElement("span");
+  label2.className = "viz-stat-label";
+  label2.textContent = "Sheets Included";
+  statBox2.appendChild(num2);
+  statBox2.appendChild(label2);
+
+  statsRow.appendChild(statBox1);
+  statsRow.appendChild(statBox2);
+  card.appendChild(statsRow);
+
+  // sheet list
+  const sheets = Array.isArray(editResult.columns) ? editResult.columns : [];
+  if (sheets.length) {
+    const sheetSection = document.createElement("div");
+    sheetSection.style.marginTop = "12px";
+
+    const label = document.createElement("div");
+    label.style.fontSize = "0.85rem";
+    label.style.fontWeight = "600";
+    label.style.color = "#374151";
+    label.style.marginBottom = "6px";
+    label.textContent = "Sheets:";
+    sheetSection.appendChild(label);
+
+    const pills = document.createElement("div");
+    pills.className = "sheet-pills";
+    sheets.forEach((sheetName) => {
+      const pill = document.createElement("span");
+      pill.className = "sheet-pill";
+      if (sheetName === "Dashboard") {
+        pill.classList.add("dashboard");
+      }
+      pill.textContent = String(sheetName);
+      pills.appendChild(pill);
+    });
+    sheetSection.appendChild(pills);
+    card.appendChild(sheetSection);
+  }
+
+  // Dashboard banner
+  if (editResult.has_dashboard) {
+    const banner = document.createElement("div");
+    banner.className = "dashboard-banner";
+    banner.style.marginTop = "12px";
+    banner.textContent = "✓ Dashboard sheet with all charts in a 2×2 grid layout included";
+    card.appendChild(banner);
+  }
+
+  // download button
+  const download = document.createElement("a");
+  download.className = "download-btn";
+  download.href = editResult.download_url;
+  download.setAttribute("download", editResult.filename || "dashboard.xlsx");
+
+  const downloadIcon = document.createElement("span");
+  downloadIcon.textContent = "↓";
+  downloadIcon.setAttribute("aria-hidden", "true");
+  download.appendChild(downloadIcon);
+  download.appendChild(document.createTextNode("Download Excel with Charts"));
 
   card.appendChild(download);
   answerBubble.appendChild(card);

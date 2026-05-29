@@ -20,7 +20,9 @@ from app.services.embeddings import embed_texts
 from app.services.extraction import extract_text_from_file
 from app.services.excel_editor import (
     get_edited_file_path,
+    is_combined_download_question,
     is_edit_question,
+    run_excel_combined,
     run_excel_edit,
 )
 from app.services.ollama_client import ollama_chat, ollama_embed, ollama_health_check
@@ -39,6 +41,11 @@ from app.services.tabular_query import (
     run_cross_reference_query,
     run_tabular_query,
     TABULAR_EXTS,
+)
+from app.services.excel_visualizer import (
+    is_visualization_question,
+    run_excel_visualization,
+    get_visualization_file_path,
 )
 from app.services.vector_store import VectorStore
 
@@ -452,6 +459,79 @@ async def ask_question(payload: AskRequest) -> dict:
         p.suffix.lower() in TABULAR_EXTS for p in upload_dir.iterdir()
     )
 
+    if has_tabular_uploads and is_combined_download_question(payload.question):
+        try:
+            combined_result = await run_in_threadpool(
+                run_excel_combined,
+                session_dir,
+                payload.question,
+                settings.ollama_base_url,
+                settings.ollama_chat_model,
+            )
+        except Exception:
+            combined_result = {"handled": False}
+
+        if combined_result.get("handled"):
+            sheet_list = ", ".join(combined_result["sheet_names"])
+            return {
+                "answer": (
+                    f"Combined Excel file created with {len(combined_result['sheet_names'])} sheets: "
+                    f"{sheet_list}. "
+                    f"Original data has {combined_result['original_rows']} rows. "
+                    f"Pivot table has {combined_result['pivot_rows']} rows × "
+                    f"{combined_result['pivot_cols']} columns. "
+                    f"Dashboard includes {combined_result['total_charts']} charts."
+                ),
+                "sources": [],
+                "chart_spec": None,
+                "edit_result": {
+                    "filename": combined_result["filename"],
+                    "download_url": f"/api/download/{session_id}/{combined_result['filename']}",
+                    "preview": combined_result["preview"],
+                    "columns": combined_result["columns"],
+                    "type": "combined",
+                    "sheet_names": combined_result["sheet_names"],
+                    "original_rows": combined_result["original_rows"],
+                    "pivot_rows": combined_result["pivot_rows"],
+                    "total_charts": combined_result["total_charts"],
+                },
+            }
+
+    if has_tabular_uploads and is_visualization_question(payload.question):
+        try:
+            viz_result = await run_in_threadpool(
+                run_excel_visualization,
+                session_dir,
+                payload.question,
+                settings.ollama_base_url,
+                settings.ollama_chat_model,
+            )
+        except Exception:
+            viz_result = {"handled": False}
+
+        if viz_result.get("handled"):
+            sheet_list = ", ".join(viz_result["sheet_names"])
+            answer = (
+                f"Excel file created with {viz_result['total_charts']} chart(s) "
+                f"across {len(viz_result['sheet_names'])} sheet(s): {sheet_list}."
+            )
+            if viz_result.get("has_dashboard"):
+                answer += " A Dashboard sheet has been included."
+            return {
+                "answer": answer,
+                "sources": [],
+                "chart_spec": None,
+                "edit_result": {
+                    "filename": viz_result["filename"],
+                    "download_url": f"/api/download/{session_id}/{viz_result['filename']}",
+                    "preview": [],
+                    "columns": viz_result["sheet_names"],
+                    "type": "visualization",
+                    "total_charts": viz_result["total_charts"],
+                    "has_dashboard": viz_result["has_dashboard"],
+                },
+            }
+
     if has_tabular_uploads and is_edit_question(payload.question):
         try:
             edit_result = await run_in_threadpool(
@@ -477,6 +557,8 @@ async def ask_question(payload: AskRequest) -> dict:
                     "download_url": f"/api/download/{session_id}/{edit_result['filename']}",
                     "preview": edit_result["preview"],
                     "columns": edit_result["columns"],
+                    "row_count": edit_result["row_count"],
+                    "col_count": edit_result["col_count"],
                 },
             }
 
@@ -715,6 +797,8 @@ async def download_edited_file(session_id: str, filename: str):
         raise HTTPException(status_code=404, detail="Session not found.")
 
     file_path = get_edited_file_path(session_dir, filename)
+    if file_path is None:
+        file_path = get_visualization_file_path(session_dir, filename)
     if file_path is None:
         raise HTTPException(status_code=404, detail="File not found.")
 
