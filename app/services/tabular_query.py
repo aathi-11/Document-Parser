@@ -286,6 +286,10 @@ def _run_code_in_subprocess(
         import base64
         import pickle
         import sys
+
+        _sys_path = {sys.path!r}
+        sys.path[:] = _sys_path
+
         import numpy as np
         import pandas as pd
 
@@ -440,7 +444,7 @@ Reference Formulas & Guidelines:
 
 Instructions:
 - Write Python code that directly operates on the pre-loaded DataFrames listed above. Do NOT load the CSV files using `pd.read_csv` or attempt to read any file from disk.
-- Do NOT import `pandas` or `numpy` unless you need specialized sub-modules (they are already imported as `pd` and `np`).
+- Do NOT import anything. `pd` and `np` are already available.
 - Do NOT write code to draw, plot, or display charts or graphs (e.g., do NOT use `matplotlib`, `pyplot`, `plt.show()`, or `df.plot()`). The frontend will handle chart rendering dynamically from the printed outputs.
 - Make sure to print the final answers, tables, or computed metrics clearly using `print()`.
 - Return ONLY the python code block starting with ```python and ending with ```. No other explanation.

@@ -19,6 +19,19 @@ from app.services.tabular_query import (
 logger = logging.getLogger(__name__)
 
 _EDIT_TRIGGERS = [
+    "add row",
+    "add a row",
+    "append row",
+    "append a row",
+    "insert row",
+    "insert a row",
+    "new row",
+    "blank row",
+    "empty row",
+    "emptyrow",
+    "create row",
+    "add rows",
+    "insert rows",
     "pivot",
     "pivot table",
     "add column",
@@ -45,10 +58,69 @@ _EDIT_TRIGGERS = [
     "crosstab",
 ]
 
+_BLANK_ROW_RE = re.compile(
+    r"\b(?:add|append|insert|create)\s+(?:a\s*)?(?:blank|empty)\s*row\b",
+    re.IGNORECASE,
+)
+_NAMED_VALUE_RE = re.compile(r"\bnamed\s+([^.,;\n]+)", re.IGNORECASE)
+
 
 def is_edit_question(question: str) -> bool:
     lowered = question.lower()
     return any(trigger in lowered for trigger in _EDIT_TRIGGERS)
+
+
+def _is_blank_row_request(question: str) -> bool:
+    return bool(_BLANK_ROW_RE.search(question))
+
+
+def _extract_named_value(question: str) -> str | None:
+    match = _NAMED_VALUE_RE.search(question)
+    if not match:
+        return None
+    value = match.group(1).strip().strip("\"'")
+    if not value:
+        return None
+    value = re.split(r"\b(?:in|at|for|with|on|into|to|of)\b", value, maxsplit=1)[0].strip()
+    return value or None
+
+
+def _select_target_df(
+    question: str,
+    preloaded_dfs: Dict[str, pd.DataFrame],
+    csv_files: list[Path],
+) -> str:
+    lowered = question.lower()
+    for csv_file in csv_files:
+        stem = csv_file.stem.lower()
+        if stem and stem in lowered:
+            var_name = sanitize_df_name(csv_file.name)
+            if var_name in preloaded_dfs:
+                return var_name
+    for var_name in preloaded_dfs.keys():
+        if var_name.lower() in lowered:
+            return var_name
+    return next(iter(preloaded_dfs.keys()))
+
+
+def _find_name_column(df: pd.DataFrame) -> str | None:
+    for col in df.columns:
+        col_name = str(col).strip().lower()
+        if "name" in col_name:
+            return col
+    for col in df.columns:
+        if df[col].dtype == "object":
+            return col
+    return None
+
+
+def _append_blank_row(df: pd.DataFrame, name_value: str | None) -> pd.DataFrame:
+    new_row = {col: None for col in df.columns}
+    if name_value:
+        name_col = _find_name_column(df)
+        if name_col is not None:
+            new_row[name_col] = name_value
+    return pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
 
 
 def run_excel_edit(
@@ -102,8 +174,9 @@ Instructions:
 - The final result must be stored in a variable called exactly result_df (mandatory).
 - If the operation is a pivot, result_df should be the pivot table (use pd.pivot_table or df.pivot_table).
 - If the operation adds or modifies a column, result_df should be the modified DataFrame.
+- If the operation adds a blank row, append a new row with empty values for all columns.
 - Do NOT use pd.read_csv or read any files from disk.
-- Do NOT import pandas or numpy (already available as pd and np).
+- Do NOT import anything (pd and np are already available).
 - Do NOT call plt.show() or any plotting functions.
 - Print result_df to stdout at the end using print(result_df.to_string()).
 - Return only the Python code block starting with ```python and ending with ```.
@@ -117,7 +190,18 @@ Python Code:"""
     success = False
     result_df: pd.DataFrame | None = None
 
+    if _is_blank_row_request(question):
+        try:
+            target = _select_target_df(question, preloaded_dfs, csv_files)
+            name_value = _extract_named_value(question)
+            result_df = _append_blank_row(preloaded_dfs[target], name_value)
+            success = True
+        except Exception as exc:
+            logger.error(f"Failed to append blank row deterministically: {exc}")
+
     for attempt in range(1, 4):
+        if success:
+            break
         code = ""
         try:
             text = ollama_chat(base_url, model, messages)
