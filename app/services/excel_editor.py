@@ -412,9 +412,27 @@ Python Code:"""
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
+    # Load original from uploads directory, not from cleaned_csvs
+    uploads_dir = session_dir / "uploads"
+    orig_df_to_write = primary_df
+    if uploads_dir.exists():
+        excel_files = sorted([
+            f for f in uploads_dir.iterdir()
+            if f.suffix.lower() in {".xlsx", ".xls", ".csv"}
+        ])
+        if excel_files:
+            try:
+                src = excel_files[0]
+                if src.suffix.lower() == ".csv":
+                    orig_df_to_write = pd.read_csv(src)
+                else:
+                    orig_df_to_write = pd.read_excel(src, engine="openpyxl")
+            except Exception as exc:
+                logger.warning(f"Could not load original uploaded file: {exc}")
+
     ws_original = wb.create_sheet("Original Data")
     ws_original.sheet_properties.tabColor = "1F3864"
-    _write_df_to_sheet(ws_original, primary_df, "Original Data")
+    _write_df_to_sheet(ws_original, orig_df_to_write, "Original Data")
 
     ws_pivot = wb.create_sheet("Pivot Table")
     ws_pivot.sheet_properties.tabColor = "2E7D32"
@@ -440,8 +458,8 @@ Python Code:"""
         "sheet_names": wb.sheetnames,
         "pivot_rows": len(result_df),
         "pivot_cols": len(result_df.columns),
-        "original_rows": len(primary_df),
-        "original_cols": len(primary_df.columns),
+        "original_rows": len(orig_df_to_write),
+        "original_cols": len(orig_df_to_write.columns),
         "total_charts": 3,
         "preview": pivot_df_reset.head(10).to_dict(orient="records"),
         "columns": list(pivot_df_reset.columns.astype(str)),
@@ -582,20 +600,58 @@ Python Code:"""
     if result_df.index.name is not None or isinstance(result_df.index, pd.MultiIndex):
         result_df = result_df.reset_index()
 
+    # Build a two-sheet workbook: Original Data + Modified Data
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    # Sheet 1 — Original Data (from the actual uploaded file)
+    uploads_dir = session_dir / "uploads"
+    original_written = False
+    if uploads_dir.exists():
+        excel_files = sorted([
+            f for f in uploads_dir.iterdir()
+            if f.suffix.lower() in {".xlsx", ".xls", ".csv"}
+        ])
+        if excel_files:
+            try:
+                src = excel_files[0]
+                if src.suffix.lower() == ".csv":
+                    orig_df = pd.read_csv(src)
+                else:
+                    orig_df = pd.read_excel(src, engine="openpyxl")
+                ws_orig = wb.create_sheet("Original Data")
+                ws_orig.sheet_properties.tabColor = "1F3864"
+                _write_df_to_sheet(ws_orig, orig_df, "Original Data")
+                original_written = True
+            except Exception as exc:
+                logger.warning(f"Could not write original data sheet: {exc}")
+
+    if not original_written:
+        # fallback: use primary preloaded df
+        ws_orig = wb.create_sheet("Original Data")
+        ws_orig.sheet_properties.tabColor = "1F3864"
+        primary_df = max(preloaded_dfs.values(), key=len)
+        _write_df_to_sheet(ws_orig, primary_df, "Original Data")
+
+    # Sheet 2 — Modified Data
+    ws_modified = wb.create_sheet("Modified Data")
+    ws_modified.sheet_properties.tabColor = "2E7D32"
+    _write_df_to_sheet(ws_modified, result_df, "Modified Data")
+
+    # Save
     output_dir = session_dir / "edited_outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
-
     words = re.findall(r"[A-Za-z0-9]+", question.lower())[:6]
     base_name = "_".join(words) if words else "edited_output"
     base_name = re.sub(r"[^A-Za-z0-9_]", "", base_name).strip("_") or "edited_output"
     filename = f"{base_name}_edited.xlsx"
-
     output_path = output_dir / filename
-    result_df.to_excel(output_path, index=False, engine="openpyxl")
+    wb.save(str(output_path))
 
     return {
         "handled": True,
         "filename": output_path.name,
+        "sheet_names": wb.sheetnames,
         "row_count": len(result_df),
         "col_count": len(result_df.columns),
         "preview": result_df.head(10).to_dict(orient="records"),

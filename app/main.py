@@ -547,8 +547,9 @@ async def ask_question(payload: AskRequest) -> dict:
         if edit_result.get("handled"):
             return {
                 "answer": (
-                    f"Done. The modified file has {edit_result['row_count']} rows "
-                    f"and {edit_result['col_count']} columns."
+                    "Done. The file contains 2 sheets: 'Original Data' "
+                    f"(your uploaded data) and 'Modified Data' ({edit_result['row_count']} rows × "
+                    f"{edit_result['col_count']} columns)."
                 ),
                 "sources": [],
                 "chart_spec": None,
@@ -559,6 +560,7 @@ async def ask_question(payload: AskRequest) -> dict:
                     "columns": edit_result["columns"],
                     "row_count": edit_result["row_count"],
                     "col_count": edit_result["col_count"],
+                    "sheet_names": edit_result.get("sheet_names", ["Original Data", "Modified Data"]),
                 },
             }
 

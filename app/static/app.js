@@ -205,8 +205,20 @@ function renderEditResult(editResult, currentSessionId) {
   card.className = "edit-result-card";
 
   const heading = document.createElement("h4");
-  heading.textContent = "Modified File Ready";
+  heading.textContent = "✏️ Modified File Ready";
   card.appendChild(heading);
+
+  const sheetRow = document.createElement("div");
+  sheetRow.className = "sheet-pills";
+  const origPill = document.createElement("span");
+  origPill.className = "sheet-pill original";
+  origPill.textContent = "Original Data";
+  const modPill = document.createElement("span");
+  modPill.className = "sheet-pill pivot";
+  modPill.textContent = "Modified Data";
+  sheetRow.appendChild(origPill);
+  sheetRow.appendChild(modPill);
+  card.appendChild(sheetRow);
 
   const columns = Array.isArray(editResult?.columns) ? editResult.columns : [];
   if (columns.length) {

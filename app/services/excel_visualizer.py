@@ -40,23 +40,36 @@ def is_visualization_question(question: str) -> bool:
 
 
 def _build_dashboard_prompt(schema_str: str, question: str) -> str:
-    return f"""Tell the LLM it is a professional Python data analyst and Excel dashboard developer. The following pandas DataFrames are preloaded: {schema_str}. The openpyxl library is also available — BarChart, LineChart, PieChart, Reference, Font, PatternFill, Alignment, Border, Side, GradientFill, get_column_letter, dataframe_to_rows are all already imported.
+    return f"""You are a professional Python developer. Write Python code using openpyxl to create Excel charts.
 
-Instructions:
-- Write Python code that creates a new openpyxl.Workbook() stored in a variable called exactly result_wb.
-- For each meaningful DataFrame, write the data to a sheet using dataframe_to_rows with index=False, header=True.
-- Style the header row of each data sheet: bold font, a dark blue fill ("1F3864"), white font color, center-aligned, with all borders.
-- Auto-size columns by iterating over them and setting column_dimensions[letter].width based on the max content length (cap at 40).
-- Freeze the top row of each data sheet using ws.freeze_panes = "A2".
-- Create charts using only openpyxl chart objects — BarChart, LineChart, PieChart — NOT matplotlib or any other library.
-- For each chart: create a Reference for values and a Reference for categories, add series to the chart, set chart.title, chart.style = 10, chart.width = 20, chart.height = 12.
-- If the user asks for a dashboard, create a separate sheet called "Dashboard" and place all charts on it using ws.add_chart(chart, anchor) with anchors like "A1", "K1", "A22", "K22" for a 2x2 grid layout.
-- Store the final workbook in result_wb — this variable is mandatory and must exist after execution.
-- Do NOT call result_wb.save() — saving is handled externally.
-- Do NOT import openpyxl, pandas, or numpy — they are already available.
-- Do NOT use matplotlib, pyplot, or any GUI library.
-- Print a summary to stdout: how many sheets created, how many charts added.
-- Return ONLY the python code block starting with ```python and ending with ```.
+The following pandas DataFrames are already loaded in the environment:
+{schema_str}
+
+These variables are already available (do NOT import them):
+- pd, np — pandas and numpy
+- openpyxl, BarChart, LineChart, PieChart, Reference, DataPoint
+- Font, PatternFill, Alignment, Border, Side, GradientFill
+- get_column_letter, dataframe_to_rows
+
+Your task:
+1. Create a new workbook: result_wb = openpyxl.Workbook()
+2. Remove the default sheet: result_wb.remove(result_wb.active)
+3. Create a sheet called "Dashboard": dash_ws = result_wb.create_sheet("Dashboard")
+4. Pick the most relevant DataFrame for charting based on the user instruction.
+5. Write that DataFrame into a hidden data sheet called "ChartData" using dataframe_to_rows.
+6. Build 2 or 3 charts using ONLY BarChart, LineChart, or PieChart from openpyxl.
+- For each chart: set chart.title, chart.style = 10, chart.width = 20, chart.height = 12
+- Create a Reference for data and a Reference for categories from the ChartData sheet
+- Use add_data(ref, titles_from_data=True) and set_categories(cat_ref)
+- Place charts on the Dashboard sheet using dash_ws.add_chart(chart, "A1"), dash_ws.add_chart(chart2, "K1"), etc.
+7. Set dash_ws.sheet_view.showGridLines = False
+8. Store the final workbook in result_wb — this is mandatory.
+9. Do NOT call result_wb.save()
+10. Do NOT use matplotlib, pyplot, plt, or seaborn.
+11. Do NOT import anything.
+12. Print "Charts created successfully" to stdout.
+
+Return ONLY a Python code block starting with ```python and ending with ```.
 
 User instruction: {question}
 Python Code:"""
@@ -168,6 +181,36 @@ def run_excel_visualization(session_dir: Path, question: str, base_url: str, mod
 
     # Part C — Save the workbook
     if success and result_wb is not None:
+        # Always inject Original Data as the first sheet
+        original_inserted = False
+        uploads_dir = session_dir / "uploads"
+        if uploads_dir.exists():
+            excel_files = sorted([
+                f for f in uploads_dir.iterdir()
+                if f.suffix.lower() in {".xlsx", ".xls", ".csv"}
+            ])
+            if excel_files:
+                try:
+                    src = excel_files[0]
+                    if src.suffix.lower() == ".csv":
+                        orig_df = pd.read_csv(src)
+                    else:
+                        orig_df = pd.read_excel(src, engine="openpyxl")
+
+                    orig_ws = result_wb.create_sheet("Original Data", 0)
+                    orig_ws.sheet_properties.tabColor = "1F3864"
+                    for row in dataframe_to_rows(orig_df, index=False, header=True):
+                        orig_ws.append(row)
+                    for cell in orig_ws[1]:
+                        cell.font = Font(bold=True, color="FFFFFF", size=11)
+                        cell.fill = PatternFill("solid", fgColor="1F3864")
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                    orig_ws.freeze_panes = "A2"
+                    orig_ws.auto_filter.ref = orig_ws.dimensions
+                    original_inserted = True
+                except Exception as e:
+                    logger.warning(f"Could not insert original data sheet: {e}")
+
         outputs_dir = session_dir / "edited_outputs"
         outputs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -188,6 +231,7 @@ def run_excel_visualization(session_dir: Path, question: str, base_url: str, mod
             "sheet_names": sheet_names,
             "total_charts": total_charts,
             "has_dashboard": "Dashboard" in sheet_names,
+            "has_original": original_inserted,
         }
 
     return {"handled": False}
